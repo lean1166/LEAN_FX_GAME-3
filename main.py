@@ -73,86 +73,68 @@ liquidity_levels = []
 current_visible_count = 100.0
 target_visible_count = 100.0
 
-def find_liquidity(candles_list, start_idx, end_idx):
+def find_liquidity(candles_list, start_idx, end_idx, bos_type, price_floor, price_ceil):
     """
-    Busca equal highs y equal lows en todas las velas del rango.
-    Un high/low es valido si tiene al menos 2 velas de retroceso despues (fractal menor).
-    Si 2+ fractales menores tienen el mismo nivel (tolerancia 3 pts) y estan separados
-    al menos 4 velas, marcar como LIQ.
-    IMPORTANTE: Solo marcar si el nivel NO fue mitigado despues del ultimo toque
-    (ninguna vela posterior cerro pasando ese nivel).
-    Maximo 3 niveles.
+    Busca liquidez dentro del rango operativo.
+    - BOS ALCISTA: busca equal highs entre price_floor (active_ob.high) y price_ceil (prev_range_high)
+    - BOS BAJISTA: busca equal lows entre price_floor (prev_range_low) y price_ceil (active_ob.low)
+    Fractal menor: high/low con 2 velas de retroceso despues.
+    2+ fractales al mismo nivel (tolerancia 3 pts), separados 4+ velas = LIQ.
+    Solo niveles NO mitigados. Maximo 3.
     """
+    if price_floor >= price_ceil:
+        return []
     tolerance = 3.0
     min_separation = 4
-    # Encontrar fractales menores de highs
-    fractal_highs = []
-    for i in range(start_idx, end_idx - 2):
-        c = candles_list[i]
-        if (candles_list[i + 1]["high"] < c["high"] and candles_list[i + 2]["high"] < c["high"]):
-            if i > start_idx:
-                fractal_highs.append({"price": c["high"], "index": i})
-    # Encontrar fractales menores de lows
-    fractal_lows = []
-    for i in range(start_idx, end_idx - 2):
-        c = candles_list[i]
-        if (candles_list[i + 1]["low"] > c["low"] and candles_list[i + 2]["low"] > c["low"]):
-            if i > start_idx:
-                fractal_lows.append({"price": c["low"], "index": i})
+    fractals = []
+    if bos_type == "ALCISTA":
+        # Buscar fractal highs dentro de la zona
+        for i in range(start_idx, end_idx - 2):
+            c = candles_list[i]
+            if (candles_list[i + 1]["high"] < c["high"] and candles_list[i + 2]["high"] < c["high"]):
+                if price_floor <= c["high"] <= price_ceil:
+                    fractals.append({"price": c["high"], "index": i})
+        search_side = "high"
+    else:
+        # Buscar fractal lows dentro de la zona
+        for i in range(start_idx, end_idx - 2):
+            c = candles_list[i]
+            if (candles_list[i + 1]["low"] > c["low"] and candles_list[i + 2]["low"] > c["low"]):
+                if price_floor <= c["low"] <= price_ceil:
+                    fractals.append({"price": c["low"], "index": i})
+        search_side = "low"
+    # Buscar pares al mismo nivel
     levels = []
-    # Buscar pares de fractal highs al mismo nivel
-    for i in range(len(fractal_highs)):
-        for j in range(i + 1, len(fractal_highs)):
-            if abs(fractal_highs[j]["index"] - fractal_highs[i]["index"]) >= min_separation:
-                if abs(fractal_highs[i]["price"] - fractal_highs[j]["price"]) <= tolerance:
-                    avg_price = (fractal_highs[i]["price"] + fractal_highs[j]["price"]) / 2
-                    last_touch_idx = fractal_highs[j]["index"]
+    for i in range(len(fractals)):
+        for j in range(i + 1, len(fractals)):
+            if abs(fractals[j]["index"] - fractals[i]["index"]) >= min_separation:
+                if abs(fractals[i]["price"] - fractals[j]["price"]) <= tolerance:
+                    avg_price = (fractals[i]["price"] + fractals[j]["price"]) / 2
+                    if avg_price < price_floor or avg_price > price_ceil:
+                        continue
+                    last_touch_idx = fractals[j]["index"]
                     # Verificar que NO fue mitigado despues del ultimo toque
                     mitigated = False
                     for k in range(last_touch_idx + 1, end_idx):
-                        if candles_list[k]["close"] > avg_price:
+                        if search_side == "high" and candles_list[k]["close"] > avg_price:
+                            mitigated = True
+                            break
+                        elif search_side == "low" and candles_list[k]["close"] < avg_price:
                             mitigated = True
                             break
                     if mitigated:
                         continue
                     found = False
                     for lv in levels:
-                        if lv["side"] == "high" and abs(lv["price"] - avg_price) <= tolerance:
+                        if abs(lv["price"] - avg_price) <= tolerance:
                             lv["touches"] += 1
                             if last_touch_idx > lv["last_index"]:
                                 lv["last_index"] = last_touch_idx
                             found = True
                             break
                     if not found:
-                        levels.append({"side": "high", "price": avg_price,
-                                       "first_index": fractal_highs[i]["index"],
-                                       "last_index": last_touch_idx, "touches": 2})
-    # Buscar pares de fractal lows al mismo nivel
-    for i in range(len(fractal_lows)):
-        for j in range(i + 1, len(fractal_lows)):
-            if abs(fractal_lows[j]["index"] - fractal_lows[i]["index"]) >= min_separation:
-                if abs(fractal_lows[i]["price"] - fractal_lows[j]["price"]) <= tolerance:
-                    avg_price = (fractal_lows[i]["price"] + fractal_lows[j]["price"]) / 2
-                    last_touch_idx = fractal_lows[j]["index"]
-                    # Verificar que NO fue mitigado despues del ultimo toque
-                    mitigated = False
-                    for k in range(last_touch_idx + 1, end_idx):
-                        if candles_list[k]["close"] < avg_price:
-                            mitigated = True
-                            break
-                    if mitigated:
-                        continue
-                    found = False
-                    for lv in levels:
-                        if lv["side"] == "low" and abs(lv["price"] - avg_price) <= tolerance:
-                            lv["touches"] += 1
-                            if last_touch_idx > lv["last_index"]:
-                                lv["last_index"] = last_touch_idx
-                            found = True
-                            break
-                    if not found:
-                        levels.append({"side": "low", "price": avg_price,
-                                       "first_index": fractal_lows[i]["index"],
+                        levels.append({"side": search_side, "price": avg_price,
+                                       "first_index": fractals[i]["index"],
                                        "last_index": last_touch_idx, "touches": 2})
     levels.sort(key=lambda x: x["touches"], reverse=True)
     return levels[:3]
@@ -264,7 +246,7 @@ def process_new_candle(candles_list, new_index):
             active_fvg["type"] = "BAJISTA"
         # Calcular liquidez en todas las velas visibles desde el BOS anterior
         lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
-        liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index)
+        liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "BAJISTA", prev_range_low if prev_range_low else -99999, active_ob["low"] if active_ob else 99999)
         prev_range_high = range_high
         prev_range_high_index = range_high_index
         prev_range_low = None
@@ -299,7 +281,7 @@ def process_new_candle(candles_list, new_index):
             active_fvg["type"] = "ALCISTA"
         # Calcular liquidez en todas las velas visibles desde el BOS anterior
         lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
-        liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index)
+        liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "ALCISTA", active_ob["high"] if active_ob else -99999, prev_range_high if prev_range_high else 99999)
         prev_range_low = range_low
         prev_range_low_index = range_low_index
         prev_range_high = None
@@ -392,7 +374,7 @@ def process_new_candle(candles_list, new_index):
                 active_fvg["type"] = "ALCISTA"
             # Calcular liquidez en todas las velas visibles desde el BOS anterior
             lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
-            liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index)
+            liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "ALCISTA", active_ob["high"] if active_ob else -99999, prev_range_high if prev_range_high else 99999)
             prev_range_low = range_low
             prev_range_low_index = range_low_index
             range_high = c["high"]
@@ -423,7 +405,7 @@ def process_new_candle(candles_list, new_index):
                 active_fvg["type"] = "BAJISTA"
             # Calcular liquidez en todas las velas visibles desde el BOS anterior
             lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
-            liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index)
+            liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "BAJISTA", prev_range_low if prev_range_low else -99999, active_ob["low"] if active_ob else 99999)
             prev_range_high = range_high
             prev_range_high_index = range_high_index
             range_low = c["low"]
