@@ -1,14 +1,51 @@
 import sys
+import os
 import random
 import pygame
 
 try:
     pygame.init()
+    pygame.mixer.init()
     screen = pygame.display.set_mode((1920, 1080))
     pygame.display.set_caption("LEAN FX LIVE")
 except Exception as e:
     print("[ERROR GRAFICO]:", e)
     sys.exit(1)
+
+# --- CARGAR SONIDOS ---
+SOUND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sound")
+
+def load_sound(filename):
+    path = os.path.join(SOUND_DIR, filename)
+    if os.path.exists(path):
+        return pygame.mixer.Sound(path)
+    else:
+        print(f"[AVISO] Sonido no encontrado: {path}")
+        return None
+
+sound_bos = load_sound("BOS.mp3")
+sound_fractal = load_sound("FRACTAL.mp3")
+sound_win = load_sound("WIN.mp3")
+sound_loss = load_sound("LOSS.mp3")
+sound_zoom = load_sound("ZOOM.mp3")
+
+def play_sound(sound):
+    if sound is not None:
+        sound.play()
+
+def trade_win(amount):
+    """Llamar cuando se gana un trade. Suma al balance y reproduce WIN.mp3"""
+    global fxp_balance, wins
+    fxp_balance += amount
+    wins += 1
+    play_sound(sound_win)
+
+def trade_loss(amount):
+    """Llamar cuando se pierde un trade. Resta del balance y reproduce LOSS.mp3"""
+    global fxp_balance, losses
+    fxp_balance -= amount
+    losses += 1
+    play_sound(sound_loss)
 
 pygame.font.init()
 font_price = pygame.font.SysFont("Arial", 16, bold=True)
@@ -227,8 +264,10 @@ def process_new_candle(candles_list, new_index):
                 active_fvg = None
     if prev_range_low is not None and is_bear and c["close"] < prev_range_low:
         bos_markers.append({"type": "BAJISTA", "price": prev_range_low, "level_index": prev_range_low_index, "break_index": new_index})
+        play_sound(sound_bos)
         if range_high is not None:
             confirmed_fractals.append({"price": range_high, "index": range_high_index, "type": "high"})
+            play_sound(sound_fractal)
         if range_high_index is not None:
             ob_candle = candles_list[range_high_index]
             prev_ob = active_ob
@@ -262,8 +301,10 @@ def process_new_candle(candles_list, new_index):
         return
     if prev_range_high is not None and is_bull and c["close"] > prev_range_high:
         bos_markers.append({"type": "ALCISTA", "price": prev_range_high, "level_index": prev_range_high_index, "break_index": new_index})
+        play_sound(sound_bos)
         if range_low is not None:
             confirmed_fractals.append({"price": range_low, "index": range_low_index, "type": "low"})
+            play_sound(sound_fractal)
         if range_low_index is not None:
             ob_candle = candles_list[range_low_index]
             prev_ob = active_ob
@@ -314,6 +355,7 @@ def process_new_candle(candles_list, new_index):
                 pullback_count = 0
                 prev_pullback_close = None
                 confirmed_fractals.append({"price": range_high, "index": range_high_index, "type": "high"})
+                play_sound(sound_fractal)
             else:
                 pullback_count = 1
                 prev_pullback_close = c["close"]
@@ -339,6 +381,7 @@ def process_new_candle(candles_list, new_index):
                 pullback_count = 0
                 prev_pullback_close = None
                 confirmed_fractals.append({"price": range_low, "index": range_low_index, "type": "low"})
+                play_sound(sound_fractal)
             else:
                 pullback_count = 1
                 prev_pullback_close = c["close"]
@@ -356,7 +399,9 @@ def process_new_candle(candles_list, new_index):
                 range_high_index = new_index
         if is_bull and c["close"] > range_high:
             bos_markers.append({"type": "ALCISTA", "price": range_high, "level_index": range_high_index, "break_index": new_index})
+            play_sound(sound_bos)
             confirmed_fractals.append({"price": range_low, "index": range_low_index, "type": "low"})
+            play_sound(sound_fractal)
             if range_low_index is not None:
                 ob_candle = candles_list[range_low_index]
                 prev_ob = active_ob
@@ -387,7 +432,9 @@ def process_new_candle(candles_list, new_index):
             last_direction = None
         elif is_bear and c["close"] < range_low:
             bos_markers.append({"type": "BAJISTA", "price": range_low, "level_index": range_low_index, "break_index": new_index})
+            play_sound(sound_bos)
             confirmed_fractals.append({"price": range_high, "index": range_high_index, "type": "high"})
+            play_sound(sound_fractal)
             if range_high_index is not None:
                 ob_candle = candles_list[range_high_index]
                 prev_ob = active_ob
@@ -557,7 +604,11 @@ while running:
             if distance > needed_count:
                 needed_count = distance + 10
     needed_count = max(100, min(needed_count, 300))
-    target_visible_count = float(needed_count)
+    new_target = float(needed_count)
+    # Sonido de ZOOM cuando el zoom cambia significativamente
+    if abs(new_target - target_visible_count) > 15:
+        play_sound(sound_zoom)
+    target_visible_count = new_target
     current_visible_count += (target_visible_count - current_visible_count) * 0.08
     num_visible = int(current_visible_count)
     visible_candles = all_candles[-num_visible:]
