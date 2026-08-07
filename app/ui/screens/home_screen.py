@@ -3,7 +3,7 @@
 import pygame
 import random
 
-from app.charts.generator import generate_candles
+from app.charts.generator import generate_candles, trigger_market_exhaustion
 from app.ui.grid import GridView
 from app.ui.header import HeaderView
 
@@ -140,12 +140,22 @@ class HomeScreen:
             
             if trade["type"] == "BUY":
                 trade["pnl"] = (current_price - trade["price"]) * 15.0
-                if current_price >= trade["tp"]: self._close_position_auto(is_win=True)
-                elif current_price <= trade["sl"]: self._close_position_auto(is_win=False)
+                if current_price >= trade["tp"]: 
+                    # Congelar PnL al valor exacto del TP
+                    trade["pnl"] = (trade["tp"] - trade["price"]) * 15.0
+                    trigger_market_exhaustion(1) # Reacción bajista
+                    self._close_position_auto(is_win=True)
+                elif current_price <= trade["sl"]: 
+                    self._close_position_auto(is_win=False)
             else:
                 trade["pnl"] = (trade["price"] - current_price) * 15.0
-                if current_price <= trade["tp"]: self._close_position_auto(is_win=True)
-                elif current_price >= trade["sl"]: self._close_position_auto(is_win=False)
+                if current_price <= trade["tp"]: 
+                    # Congelar PnL al valor exacto del TP
+                    trade["pnl"] = (trade["price"] - trade["tp"]) * 15.0
+                    trigger_market_exhaustion(-1) # Reacción alcista
+                    self._close_position_auto(is_win=True)
+                elif current_price >= trade["sl"]: 
+                    self._close_position_auto(is_win=False)
 
         if self.buttons_active:
             elapsed = current_time - self.button_timer

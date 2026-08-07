@@ -99,6 +99,9 @@ def init_db():
         "liq_d_target": "150",        # Meta de likes para evento D (barra unica)
         "liq_d_bonus": "800",         # Bono FXP del evento D
         "tiktok_username": "lean.fx1",  # Cuenta TikTok Live a conectar
+        "color_bg": "8,12,20",         # Color de fondo general
+        "color_bull": "38,166,154",    # Color velas alcistas
+        "color_bear": "239,83,80",     # Color velas bajistas
     }
     for key, value in defaults.items():
         c.execute('''INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)''', (key, value))

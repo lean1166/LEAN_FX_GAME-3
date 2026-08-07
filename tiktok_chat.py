@@ -136,7 +136,8 @@ class TikTokChatReader:
         self.connected = False
         self.votes = []  # Lista de {"name": str, "vote": "BUY"/"SELL", "rr": float, "avatar_url": str}
         self.voting_open = False  # True cuando se puede votar (zona activa)
-        self.voters_this_zone = set()  # Viewers que ya votaron en esta zona (cooldown)
+        self.voters_this_zone = set()  # Viewers que ya votaron en esta ronda/zona (cooldown por ronda)
+        self.voters_this_candle = set() # Viewers que ya votaron en esta vela (anti-spam por vela)
         self.all_comments = []  # Todos los comentarios (para debug)
         self.thread = None
         self.loop = None
@@ -207,15 +208,27 @@ class TikTokChatReader:
                         if len(self.all_comments) > 50:
                             self.all_comments.pop(0)
 
-                        # Detectar voto BUY/SELL
+                        # Detectar voto BUY/SELL (Estricto: solo SUBE y BAJA)
                         if self.voting_open:
+                            # 1. Validación de Cooldown por Ronda y Anti-Spam por Vela
+                            if unique_id in self.voters_this_zone:
+                                return # Ya votó en esta ronda, ignorar silenciosamente
+                            
+                            if unique_id in self.voters_this_candle:
+                                return # Ya mandó comando en esta vela, evitar spam
+                                
                             vote = None
-                            if "BUY" in comment or "COMPRA" in comment or "COMPRAS" in comment or "LARGO" in comment or "LARGOS" in comment or "ALCISTA" in comment:
+                            # Bloquear palabras antiguas y solo permitir "SUBE" y "BAJA"
+                            if "SUBE" in comment:
                                 vote = "BUY"
-                            elif "SELL" in comment or "VENTA" in comment or "VENTAS" in comment or "CORTO" in comment or "CORTOS" in comment or "BAJISTA" in comment:
+                            elif "BAJA" in comment:
                                 vote = "SELL"
 
                             if vote:
+                                # Registrar al usuario para los bloqueos de cooldown y spam
+                                self.voters_this_zone.add(unique_id)
+                                self.voters_this_candle.add(unique_id)
+                                
                                 # Permitir múltiples votos (duplicados sin descartar a nadie)
                                 rr = parse_rr_command(comment, self.max_rr)
                                 self.votes.append({
@@ -249,10 +262,16 @@ class TikTokChatReader:
         self.voting_open = True
         self.votes = []
         self.voters_this_zone = set()
+        self.voters_this_candle = set()
 
     def close_voting(self):
         """Cerrar votación (cuando termina el timer)"""
         self.voting_open = False
+        self.voters_this_candle = set()
+
+    def reset_candle_cooldown(self):
+        """Resetear anti-spam por vela (llamado desde main.py en cada vela nueva)"""
+        self.voters_this_candle = set()
 
     def get_votes(self):
         """Obtener votos actuales"""

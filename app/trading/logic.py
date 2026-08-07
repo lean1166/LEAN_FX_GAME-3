@@ -83,8 +83,9 @@ class Position:
                     level["hit"] = True
                     tp_hit_any = True
         
-        # Si tocó el TP final, cerrar la posición
+        # Si tocó el TP final, cerrar la posición de forma innegociable
         if self.tp_levels and self.tp_levels[-1]["hit"]:
+            # Congelar exactamente en el precio del TP final para el PnL
             self.close("TP", self.final_tp)
             return "TP"
             

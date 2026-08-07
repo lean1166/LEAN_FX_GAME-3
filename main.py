@@ -3,6 +3,8 @@ import os
 import random
 import math
 import pygame
+import tkinter as tk
+from tkinter import colorchooser
 
 from shared_paths import BASE_DIR, SOUND_DIR, PROFILE_DIR, find_asset, find_profile_image
 from avatar_utils import get_viewer_avatar
@@ -13,6 +15,35 @@ from database import (get_streamer_stats, update_player_balance, add_trade_histo
 from ranking_utils import load_top_viewers
 from tiktok_chat import TikTokChatReader
 import luvvoice_tts
+
+# --- CONFIGURACIÓN DE COLORES PERSONALIZABLES ---
+def parse_color(c_str, default=(255, 255, 255)):
+    try:
+        r, g, b = map(int, c_str.split(","))
+        return (r, g, b)
+    except:
+        return default
+
+def pick_color(initial_color=(255, 255, 255)):
+    """Abre un selector de color de sistema y devuelve (r, g, b) o None."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    color = colorchooser.askcolor(color=initial_color, title="Seleccionar Color")
+    root.destroy()
+    if color[0]:
+        return tuple(map(int, color[0]))
+    return None
+
+COLOR_PRESETS_BG = [
+    (8, 12, 20), (0, 0, 0), (13, 17, 23), (20, 20, 25), (10, 15, 30)
+]
+COLOR_PRESETS_BULL = [
+    (38, 166, 154), (34, 197, 94), (0, 220, 255), (230, 230, 230), (0, 255, 0)
+]
+COLOR_PRESETS_BEAR = [
+    (239, 83, 80), (255, 68, 68), (255, 152, 0), (255, 0, 255), (100, 100, 100)
+]
 
 # --- CLASE DE GESTIÓN DE AUDIO CON COLA Y CONGELAMIENTO ---
 class AudioManager:
@@ -66,22 +97,16 @@ class AudioManager:
 try:
     pygame.init()
     pygame.mixer.init()
-<<<<<<< HEAD
     # Detectar resolución de pantalla automáticamente
     display_info = pygame.display.Info()
     SCREEN_W = display_info.current_w
     SCREEN_H = display_info.current_h
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.NOFRAME)
     pygame.display.set_caption("LEAN FX GAME")
-=======
-    screen = pygame.display.set_mode((1920, 1080))
-    pygame.display.set_caption("LEAN FX LIVE")
->>>>>>> origin/main
 except Exception as e:
     print("[ERROR GRAFICO]:", e)
     sys.exit(1)
 
-<<<<<<< HEAD
 # Instancia global del gestor de audio
 audio_manager = AudioManager()
 
@@ -103,11 +128,6 @@ if icon_path:
         print("[AVISO] No se pudo cargar el icono")
 
 # --- CARGAR SONIDOS ---
-=======
-# --- CARGAR SONIDOS ---
-SOUND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sound")
-
->>>>>>> origin/main
 def load_sound(filename):
     path = os.path.join(SOUND_DIR, filename)
     if os.path.exists(path):
@@ -121,7 +141,6 @@ sound_fractal = load_sound("FRACTAL.mp3")
 sound_win = load_sound("WIN.mp3")
 sound_loss = load_sound("LOSS.mp3")
 sound_zoom = load_sound("ZOOM.mp3")
-<<<<<<< HEAD
 sound_liquidity_start = load_sound("LIQUIDITY_START.mp3")   # Arranca un evento de likes
 sound_like_milestone = load_sound("LIKE_MILESTONE.mp3")     # Se alcanza un nivel/meta
 sound_liquidity_success = load_sound("LIQUIDITY_SUCCESS.mp3")  # Bono pagado con exito
@@ -176,6 +195,7 @@ for i in range(1, 4):
 
 # Estado de voz (para que el timer empiece después de que termine de hablar)
 zona_voice_playing = False
+zona_voice_playing = False
 zona_voice_channel = None
 total_operations = 0  # Contador de operaciones totales en el stream
 # Freeze por voz: congela el gráfico mientras habla (WIN/LOSS/LEAN FX)
@@ -207,29 +227,54 @@ def trade_loss(amount, rr_ratio=1.0):
     """Llamar cuando se pierde un trade. Resta del balance"""
     global fxp_balance, losses
     fxp_balance -= amount
-    losses += 1
     update_player_balance("LEAN FX", fxp_balance, loss=True)
     add_trade_history("LEAN FX", "SELL", "LOSS", -amount, rr_ratio)
-=======
 
-def play_sound(sound):
-    if sound is not None:
-        sound.play()
+def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
+    """Cierra una posición de forma forzosa al tocar la Meta Máxima."""
+    global market_exhaustion_active, market_exhaustion_start, market_exhaustion_dir
+    global flash_active, flash_start_time, flash_color, flash_text, total_operations
+    global active_trade, viewer_trade_active, bot_bias_active
+    
+    current_time = pygame.time.get_ticks()
+    
+    # 1. Bloqueo de Seguridad: Marcar como resuelto e impedir más cálculos
+    lvl["resolved"] = True
+    grp["resolved"] = True
+    trade_data["cerrada"] = True
+    
+    # 2. Forzar Agotamiento de Mercado (Cambio de Ciclo / BOS)
+    market_exhaustion_active = True
+    market_exhaustion_start = current_time
+    # Si fue BUY (subiendo), el mercado DEBE bajar (-1). Si fue SELL, DEBE subir (1).
+    market_exhaustion_dir = -1 if g_dir == "BUY" else 1
+    
+    # 3. Feedback Visual y Audio
+    grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
+    
+    # Audio de Meta Máxima
+    audio_manager.set_force_pause(True)
+    audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_tp{int(lvl['rr'])}.mp3", pausar_mercado=True)
+    
+    # Flash de pantalla si es el bando principal o trade de viewers
+    if is_viewer or g_dir == bot_decision:
+        flash_active = True
+        flash_start_time = current_time
+        flash_color = GLOBAL_COLOR_BULL
+        flash_text = f"+{int(lvl['rr']) * 100} FXP"
+        total_operations += 1
+        
+        # Voces de victoria (solo si no hay viewers operando para no saturar)
+        if not is_viewer and voz_win_voices and viewer_trade_active is None:
+            audio_manager.play(f"VOZ_WIN_{random.randint(1, 7)}.mp3")
+        elif is_viewer:
+            luvvoice_tts.play_on_max_tp()
 
-def trade_win(amount):
-    """Llamar cuando se gana un trade. Suma al balance y reproduce WIN.mp3"""
-    global fxp_balance, wins
-    fxp_balance += amount
-    wins += 1
-    play_sound(sound_win)
-
-def trade_loss(amount):
-    """Llamar cuando se pierde un trade. Resta del balance y reproduce LOSS.mp3"""
-    global fxp_balance, losses
-    fxp_balance -= amount
-    losses += 1
-    play_sound(sound_loss)
->>>>>>> origin/main
+    # 4. Limpieza Inmediata (opcional, pero marcamos para borrado en el siguiente frame)
+    if not is_viewer:
+        bot_bias_active = False
+    
+    print(f"[SISTEMA] META MÁXIMA ALCANZADA (RR {lvl['rr']}). Posición cerrada y PnL congelado.")
 
 pygame.font.init()
 font_price = pygame.font.SysFont("Arial", 16, bold=True)
@@ -269,6 +314,9 @@ top_viewers = load_top_viewers()
 top5_prev_order = [v["name"] for v in top_viewers]
 top5_last_refresh = 0
 TOP5_REFRESH_INTERVAL = 3000  # Chequear cada 3 segundos
+
+# --- ESTADO DE ANIMACIÓN DE LA GUÍA ---
+guide_animation_start = 0
 
 def check_top5_levelup_sound(current_time):
     """Refresca top_viewers y reproduce LEVELUP.mp3 si alguien subió de posición"""
@@ -334,9 +382,14 @@ current_candle = {"open": candles[-1]["close"], "close": candles[-1]["close"], "
 buttons_active = False
 zone_time_left = 0.0
 active_trade = None
-TRADE_RISK = 100  # Siempre pierdes 100 FXP, sin importar el tamaño del SL
-TP_MULTIPLIER = 3.0  # Risk:Reward 1:3
-SL_BUFFER = 1.0  # SL 1 pip debajo/encima de la zona
+# --- SISTEMA DE AGOTAMIENTO DE MERCADO ---
+market_exhaustion_active = False
+market_exhaustion_dir = 0
+market_exhaustion_start = 0
+MARKET_EXHAUSTION_DURATION = 8000  # 8 segundos de retroceso forzado
+TRADE_RISK = 100  # Siempre pierdes 100 FXP, sin importar el tamaño del Riesgo
+TP_MULTIPLIER = 3.0  # Meta:Riesgo 3:1
+SL_BUFFER = 1.0  # Riesgo 1 pip debajo/encima de la zona
 TIMER_DURATION = 10000  # 10 segundos en ms (temporal para pruebas)
 trade_history = []
 font_btn = pygame.font.SysFont("Arial", 20, bold=True)
@@ -403,10 +456,17 @@ LIQUIDITY_C_LEVELS = [
 LIQUIDITY_D_DURATION = 20000    # 20s de duracion (no configurable)
 LIQUIDITY_D_TARGET = int(get_config("liq_d_target", "150"))        # Meta unica para llenar la barra
 LIQUIDITY_D_BONUS = int(get_config("liq_d_bonus", "800"))          # Bono si se llena la barra
+LIQUIDITY_MODE_DYNAMIC = get_config("liq_mode", "0") == "1"   # Modo dinámico de likes
 
 # --- CONEXIÓN TIKTOK LIVE ---
 TIKTOK_USERNAME = get_config("tiktok_username", "lean.fx1")
-MAX_RR = int(get_config("max_rr", "3"))  # Límite máximo de R:R permitido (1:max_rr)
+MAX_RR = int(get_config("max_rr", "3"))  # Límite máximo de Meta permitido (1:max_meta)
+
+# Cargar colores personalizados
+GLOBAL_COLOR_BG = parse_color(get_config("color_bg", "8,12,20"), (8, 12, 20))
+GLOBAL_COLOR_BULL = parse_color(get_config("color_bull", "38,166,154"), (38, 166, 154))
+GLOBAL_COLOR_BEAR = parse_color(get_config("color_bear", "239,83,80"), (239, 83, 80))
+
 tiktok_chat = TikTokChatReader(username=TIKTOK_USERNAME, max_rr=MAX_RR)
 tiktok_chat.start()  # Inicia en hilo separado
 # --- SISTEMA DE VOTOS DE VIEWERS ---
@@ -442,8 +502,6 @@ active_fvg = None
 current_visible_count = 100.0
 target_visible_count = 100.0
 
-<<<<<<< HEAD
-=======
 def find_liquidity(candles_list, start_idx, end_idx, bos_type, price_floor, price_ceil):
     """
     Busca liquidez dentro del rango operativo.
@@ -525,8 +583,6 @@ def mitigate_liquidity(candles_list, liq_levels, candle_index):
             continue  # mitigado
         remaining.append(lv)
     return remaining
-
->>>>>>> origin/main
 def find_decisional(candles_list, bos_index, bos_type, extreme_index):
     """
     El decisional es la vela que hizo el punto mas alto/bajo del ultimo retroceso
@@ -606,12 +662,9 @@ def process_new_candle(candles_list, new_index):
     if prev_range_low is not None and is_bear and c["close"] < prev_range_low:
         bos_markers.append({"type": "BAJISTA", "price": prev_range_low, "level_index": prev_range_low_index, "break_index": new_index})
         play_sound(sound_bos)
-<<<<<<< HEAD
         # Incrementar bos_count de zonas mitigadas
         for k in zones_mitigated_info:
             zones_mitigated_info[k]["bos_count"] = zones_mitigated_info[k].get("bos_count", 0) + 1
-=======
->>>>>>> origin/main
         if range_high is not None:
             confirmed_fractals.append({"price": range_high, "index": range_high_index, "type": "high"})
             play_sound(sound_fractal)
@@ -630,12 +683,9 @@ def process_new_candle(candles_list, new_index):
         active_fvg = find_fvg(candles_list, range_high_index, new_index, "BAJISTA")
         if active_fvg is not None:
             active_fvg["type"] = "BAJISTA"
-<<<<<<< HEAD
-=======
         # Calcular liquidez en todas las velas visibles desde el BOS anterior
         lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
         liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "BAJISTA", prev_range_low if prev_range_low else -99999, active_ob["low"] if active_ob else 99999)
->>>>>>> origin/main
         prev_range_high = range_high
         prev_range_high_index = range_high_index
         prev_range_low = None
@@ -652,11 +702,8 @@ def process_new_candle(candles_list, new_index):
     if prev_range_high is not None and is_bull and c["close"] > prev_range_high:
         bos_markers.append({"type": "ALCISTA", "price": prev_range_high, "level_index": prev_range_high_index, "break_index": new_index})
         play_sound(sound_bos)
-<<<<<<< HEAD
         for k in zones_mitigated_info:
             zones_mitigated_info[k]["bos_count"] = zones_mitigated_info[k].get("bos_count", 0) + 1
-=======
->>>>>>> origin/main
         if range_low is not None:
             confirmed_fractals.append({"price": range_low, "index": range_low_index, "type": "low"})
             play_sound(sound_fractal)
@@ -675,12 +722,9 @@ def process_new_candle(candles_list, new_index):
         active_fvg = find_fvg(candles_list, range_low_index, new_index, "ALCISTA")
         if active_fvg is not None:
             active_fvg["type"] = "ALCISTA"
-<<<<<<< HEAD
-=======
         # Calcular liquidez en todas las velas visibles desde el BOS anterior
         lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
         liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "ALCISTA", active_ob["high"] if active_ob else -99999, prev_range_high if prev_range_high else 99999)
->>>>>>> origin/main
         prev_range_low = range_low
         prev_range_low_index = range_low_index
         prev_range_high = None
@@ -775,12 +819,9 @@ def process_new_candle(candles_list, new_index):
             active_fvg = find_fvg(candles_list, range_low_index, new_index, "ALCISTA")
             if active_fvg is not None:
                 active_fvg["type"] = "ALCISTA"
-<<<<<<< HEAD
-=======
             # Calcular liquidez en todas las velas visibles desde el BOS anterior
             lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
             liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "ALCISTA", active_ob["high"] if active_ob else -99999, prev_range_high if prev_range_high else 99999)
->>>>>>> origin/main
             prev_range_low = range_low
             prev_range_low_index = range_low_index
             range_high = c["high"]
@@ -811,12 +852,9 @@ def process_new_candle(candles_list, new_index):
             active_fvg = find_fvg(candles_list, range_high_index, new_index, "BAJISTA")
             if active_fvg is not None:
                 active_fvg["type"] = "BAJISTA"
-<<<<<<< HEAD
-=======
             # Calcular liquidez en todas las velas visibles desde el BOS anterior
             lq_impulse_start = bos_markers[-2]["break_index"] if len(bos_markers) >= 2 else 0
             liquidity_levels = find_liquidity(candles_list, lq_impulse_start, new_index, "BAJISTA", prev_range_low if prev_range_low else -99999, active_ob["low"] if active_ob else 99999)
->>>>>>> origin/main
             prev_range_high = range_high
             prev_range_high_index = range_high_index
             range_low = c["low"]
@@ -1145,7 +1183,7 @@ def show_loading_screen():
             if ch <= 0:
                 continue
             is_bull = (ci % 2 == 0)
-            color = (38, 166, 154) if is_bull else (239, 83, 80)
+            color = GLOBAL_COLOR_BULL if is_bull else GLOBAL_COLOR_BEAR
             cy = mini_candles_y + bar_h - ch
             pygame.draw.rect(screen, color, (cx, cy, 10, ch))
             pygame.draw.line(screen, color, (cx + 5, cy - 6), (cx + 5, cy + ch + 6), 1)
@@ -1176,6 +1214,7 @@ while app_running:
     menu_click_btn = None
     menu_selection = None
     game_started = False
+    guide_animation_start = 0
 
     # Animaciones del menú
     import math
@@ -1199,7 +1238,7 @@ while app_running:
             "y": random.randint(int(SCREEN_H * 0.2), int(SCREEN_H * 0.8)),
             "w": random.randint(8, 14),
             "h": h,
-            "color": random.choice([(38, 166, 154), (239, 83, 80)]),
+            "color": random.choice([GLOBAL_COLOR_BULL, GLOBAL_COLOR_BEAR]),
             "speed": random.uniform(0.2, 0.6),
         })
     # Línea de precio animada (tipo chart)
@@ -1339,6 +1378,7 @@ while app_running:
             if menu_click_btn == "iniciar":
                 in_menu = False
                 game_started = True
+                guide_animation_start = pygame.time.get_ticks()  # Iniciar animación de la guía
                 liquidity_last_trigger = pygame.time.get_ticks()
                 liquidity_event_active = None
                 if sound_ambient is not None:
@@ -1378,14 +1418,14 @@ while app_running:
                         "y": random.randint(int(SCREEN_H * 0.2), int(SCREEN_H * 0.9)),
                         "w": random.randint(8, 14),
                         "h": random.randint(30, 100),
-                        "color": random.choice([(38, 166, 154), (239, 83, 80)]),
+                        "color": random.choice([GLOBAL_COLOR_BULL, GLOBAL_COLOR_BEAR]),
                         "speed": random.uniform(0.3, 0.8),
                     })
                 while in_ranking:
                     clock.tick(60)
                     current_time = pygame.time.get_ticks()
                     time_in_ranking = current_time - ranking_enter_time
-                    screen.fill((8, 12, 20))
+                    screen.fill(GLOBAL_COLOR_BG)
                     # --- PARTICULAS DE FONDO ---
                     for p in rank_particles:
                         p["y"] -= p["speed"]
@@ -1474,9 +1514,9 @@ while app_running:
                     box_y = st_bg_y + (st_panel_h - box_h) // 2
                     stats_boxes = [
                         ("BALANCE", f"{int(streamer_now['balance'])}", (0, 220, 255)),
-                        ("PROFIT", f"{st_profit_pct:+.1f}%", (38, 200, 154) if st_profit_pct >= 0 else (239, 83, 80)),
-                        ("WINS", f"{streamer_now['wins']}", (38, 166, 154)),
-                        ("LOSSES", f"{streamer_now['losses']}", (239, 83, 80)),
+                        ("PROFIT", f"{st_profit_pct:+.1f}%", (38, 200, 154) if st_profit_pct >= 0 else GLOBAL_COLOR_BEAR),
+                        ("WINS", f"{streamer_now['wins']}", GLOBAL_COLOR_BULL),
+                        ("LOSSES", f"{streamer_now['losses']}", GLOBAL_COLOR_BEAR),
                         ("WIN RATE", f"{st_wr}%", (200, 200, 220)),
                     ]
                     for i, (label, value, color) in enumerate(stats_boxes):
@@ -1627,15 +1667,15 @@ while app_running:
                             profit_color = (38, 200, 154)
                             profit_str = f"+{profit_pct:.1f}%"
                         else:
-                            profit_color = (239, 83, 80)
+                            profit_color = GLOBAL_COLOR_BEAR
                             profit_str = f"{profit_pct:.1f}%"
                         profit_txt = font_row_stat.render(profit_str, True, profit_color)
                         screen.blit(profit_txt, (int(SCREEN_W * hx_positions[3]) + slide_offset, ry + (row_h - 3) // 2 - profit_txt.get_height() // 2))
                         # W
-                        w_txt = font_row_stat.render(str(p["wins"]), True, (38, 166, 154))
+                        w_txt = font_row_stat.render(str(p["wins"]), True, GLOBAL_COLOR_BULL)
                         screen.blit(w_txt, (int(SCREEN_W * hx_positions[4]) + slide_offset, ry + (row_h - 3) // 2 - w_txt.get_height() // 2))
                         # L
-                        l_txt = font_row_stat.render(str(p["losses"]), True, (239, 83, 80))
+                        l_txt = font_row_stat.render(str(p["losses"]), True, GLOBAL_COLOR_BEAR)
                         screen.blit(l_txt, (int(SCREEN_W * hx_positions[5]) + slide_offset, ry + (row_h - 3) // 2 - l_txt.get_height() // 2))
                         # --- WIN RATE con barra gradiente + glow ---
                         total = p["wins"] + p["losses"]
@@ -1705,6 +1745,7 @@ while app_running:
                             elif r_event.key == pygame.K_UP:
                                 if ranking_scroll > 0:
                                     ranking_scroll -= 1
+                menu_click_btn = None
             elif menu_click_btn == "config":
                 # === PANTALLA DE CONFIGURACIÓN ===
                 in_config = True
@@ -1729,120 +1770,318 @@ while app_running:
                 cfg_liq_c3_bonus = int(get_config("liq_c3_bonus", "2000"))
                 cfg_liq_d_target = int(get_config("liq_d_target", "150"))
                 cfg_liq_d_bonus = int(get_config("liq_d_bonus", "800"))
-                # Opciones de config
-                config_options = [
-                    {"label": "Timer (segundos)", "key": "timer", "type": "number", "min": 3, "max": 30, "step": 1},
-                    {"label": "Riesgo por trade (FXP)", "key": "risk", "type": "number", "min": 50, "max": 500, "step": 50},
-                    {"label": "Ratio TP:SL", "key": "tp_mult", "type": "number", "min": 1.0, "max": 5.0, "step": 0.5},
-                    {"label": "Bot LEAN FX", "key": "bot_enabled", "type": "toggle"},
-                    {"label": "Bot Win Rate %", "key": "bot_wr", "type": "number", "min": 50, "max": 90, "step": 5},
-                    {"label": "Bots Viewers", "key": "viewers_enabled", "type": "toggle"},
-                    {"label": "Volumen Musica %", "key": "vol_music", "type": "number", "min": 0, "max": 100, "step": 10},
-                    {"label": "Volumen Efectos %", "key": "vol_fx", "type": "number", "min": 0, "max": 100, "step": 10},
-                    {"label": "Max R:R Viewers (1:N)", "key": "max_rr", "type": "number", "min": 1, "max": 10, "step": 1},
-                    {"label": "-- LIQUIDEZ POR LIKES --", "key": "liq_header", "type": "header"},
-                    {"label": "Evento cada (minutos)", "key": "liq_interval", "type": "number", "min": 2, "max": 30, "step": 1},
-                    {"label": "Meta likes (Evento A)", "key": "liq_a_target", "type": "number", "min": 20, "max": 500, "step": 10},
-                    {"label": "Evento C - Nivel 1: likes", "key": "liq_c1_likes", "type": "number", "min": 20, "max": 500, "step": 10},
-                    {"label": "Evento C - Nivel 1: bono FXP", "key": "liq_c1_bonus", "type": "number", "min": 100, "max": 3000, "step": 100},
-                    {"label": "Evento C - Nivel 2: likes", "key": "liq_c2_likes", "type": "number", "min": 20, "max": 800, "step": 10},
-                    {"label": "Evento C - Nivel 2: bono FXP", "key": "liq_c2_bonus", "type": "number", "min": 100, "max": 5000, "step": 100},
-                    {"label": "Evento C - Nivel 3: likes", "key": "liq_c3_likes", "type": "number", "min": 20, "max": 1500, "step": 10},
-                    {"label": "Evento C - Nivel 3: bono FXP", "key": "liq_c3_bonus", "type": "number", "min": 100, "max": 8000, "step": 100},
-                    {"label": "Meta likes (Evento D)", "key": "liq_d_target", "type": "number", "min": 20, "max": 500, "step": 10},
-                    {"label": "Bono FXP (Evento D)", "key": "liq_d_bonus", "type": "number", "min": 100, "max": 3000, "step": 100},
-                    {"label": "RESET RANKING", "key": "reset", "type": "button"},
+                cfg_liq_mode = get_config("liq_mode", "0") == "1"
+                cfg_liq_dyn_sens = int(get_config("liq_dyn_sens", "2"))
+                cfg_liq_dyn_mult = float(get_config("liq_dyn_mult", "1.5"))
+                # Colores
+                cfg_color_bg = get_config("color_bg", "8,12,20")
+                cfg_color_bull = get_config("color_bull", "38,166,154")
+                cfg_color_bear = get_config("color_bear", "239,83,80")
+                
+                # Definición modular de la configuración
+                config_modules = [
+                    {
+                        "title": "Parámetros Principales",
+                        "tag": "Módulo 1",
+                        "tabs": ["Operación", "Automatización"],
+                        "sections": [
+                            {"title": "Parámetros de Operación", "icon": "timer", "items": ["timer", "risk", "tp_mult"]},
+                            {"title": "Automatización & Bots", "icon": "bot", "items": ["bot_enabled", "bot_wr", "viewers_enabled"]}
+                        ]
+                    },
+                    {
+                        "title": "Audio y Gestión de Audiencia",
+                        "tag": "Módulo 2",
+                        "tabs": ["Audio", "Resumen"],
+                        "sections": [
+                            {"title": "Configuración de Audio", "icon": "audio", "items": ["vol_music", "vol_fx", "max_rr"]},
+                            {"title": "Resumen de Parámetros", "icon": "summary", "items": ["sys_status", "audio_latency", "sync"]}
+                        ]
+                    },
+                    {
+                        "title": "Liquidez por Likes",
+                        "tag": "Módulo 3",
+                        "tabs": ["Evento A", "Evento C", "Evento D", "Dinámico"],
+                        "sections": [
+                            {"title": "Configuración de Meta", "icon": "meta", "items": []}, # Dinámico según sub-tab
+                            {"title": "Opciones Específicas", "icon": "settings", "items": []}
+                        ]
+                    },
+                    {
+                        "title": "Colores Visuales y Acciones",
+                        "tag": "Módulo Final",
+                        "tabs": ["Paleta", "Sistema"],
+                        "sections": [
+                            {"title": "Paleta de Gráficos", "icon": "palette", "items": ["color_bg", "color_bull", "color_bear"]},
+                            {"title": "Restablecer Sistema", "icon": "warning", "items": ["reset"]}
+                        ]
+                    }
                 ]
-                config_selected = 0  # Índice de opción seleccionada
+
+                # Diccionario de opciones para fácil acceso
+                config_items = {
+                    "timer": {"label": "Timer (segundos)", "type": "number", "min": 3, "max": 30, "step": 1},
+                    "risk": {"label": "Riesgo por trade (FXP)", "type": "number", "min": 50, "max": 500, "step": 50},
+                    "tp_mult": {"label": "Ratio Meta:Riesgo", "type": "number", "min": 1.0, "max": 5.0, "step": 0.5},
+                    "bot_enabled": {"label": "Bot LEAN FX", "type": "toggle"},
+                    "bot_wr": {"label": "Bot Win Rate %", "type": "number", "min": 50, "max": 90, "step": 5},
+                    "viewers_enabled": {"label": "Bots Viewers", "type": "toggle"},
+                    "vol_music": {"label": "Volumen Música %", "type": "number", "min": 0, "max": 100, "step": 10},
+                    "vol_fx": {"label": "Volumen Efectos %", "type": "number", "min": 0, "max": 100, "step": 10},
+                    "max_rr": {"label": "Max Meta Viewers (1:N)", "type": "number", "min": 1, "max": 10, "step": 1},
+                    "liq_interval": {"label": "Evento cada (minutos)", "type": "number", "min": 2, "max": 30, "step": 1},
+                    "liq_a_target": {"label": "Meta likes (Evento A)", "type": "number", "min": 20, "max": 500, "step": 10},
+                    "liq_c1_likes": {"label": "Nivel 1: likes requeridos", "type": "number", "min": 20, "max": 500, "step": 10},
+                    "liq_c1_bonus": {"label": "Bono FXP (Nivel 1)", "type": "number", "min": 100, "max": 3000, "step": 100},
+                    "liq_c2_likes": {"label": "Nivel 2: likes requeridos", "type": "number", "min": 20, "max": 800, "step": 10},
+                    "liq_c2_bonus": {"label": "Bono FXP (Nivel 2)", "type": "number", "min": 100, "max": 5000, "step": 100},
+                    "liq_c3_likes": {"label": "Nivel 3: likes requeridos", "type": "number", "min": 20, "max": 1500, "step": 10},
+                    "liq_c3_bonus": {"label": "Bono FXP (Nivel 3)", "type": "number", "min": 100, "max": 8000, "step": 100},
+                    "liq_d_target": {"label": "Meta likes (Evento D)", "type": "number", "min": 20, "max": 500, "step": 10},
+                    "liq_d_bonus": {"label": "Bono FXP (Evento D)", "type": "number", "min": 100, "max": 3000, "step": 100},
+                    "liq_mode": {"label": "Modo Dinámico Likes", "type": "toggle"},
+                    "liq_dyn_sens": {"label": "Sensibilidad Meta", "type": "number", "min": 1, "max": 10, "step": 1},
+                    "liq_dyn_mult": {"label": "Multiplicador Bono", "type": "number", "min": 1.0, "max": 5.0, "step": 0.5},
+                    "color_bg": {"label": "Color de Fondo", "type": "color"},
+                    "color_bull": {"label": "Color Vela Bull", "type": "color"},
+                    "color_bear": {"label": "Color Vela Bear", "type": "color"},
+                    "reset": {"label": "RESET RANKING", "type": "button"},
+                    # Items informativos
+                    "sys_status": {"label": "Estado del Sistema", "type": "info", "value": "Optimizado", "color": (38, 166, 154)},
+                    "audio_latency": {"label": "Latencia de Audio", "type": "info", "value": "~12ms", "color": (200, 200, 200)},
+                    "sync": {"label": "Sincronización", "type": "info", "value": "Activa", "color": (0, 220, 255)},
+                }
+
+                current_mod = 0
+                current_tab = 0
+                current_item_idx = 0
                 config_confirm_reset = False
+
                 while in_config:
                     clock.tick(60)
                     current_time = pygame.time.get_ticks()
-                    screen.fill((8, 12, 20))
-                    # Título
+                    screen.fill(GLOBAL_COLOR_BG)
+                    
+                    # --- CÁLCULOS DINÁMICOS SEGÚN EL MÓDULO Y SUB-TAB ---
+                    mod = config_modules[current_mod]
+                    
+                    # Actualizar items de Módulo 3 según la sub-pestaña seleccionada
+                    if current_mod == 2:
+                        if current_tab == 0: # Evento A
+                            mod["sections"][0]["items"] = ["liq_interval", "liq_a_target"]
+                            mod["sections"][1]["items"] = []
+                        elif current_tab == 1: # Evento C
+                            mod["sections"][0]["items"] = ["liq_c1_likes", "liq_c1_bonus", "liq_c2_likes", "liq_c2_bonus"]
+                            mod["sections"][1]["items"] = ["liq_c3_likes", "liq_c3_bonus"]
+                        elif current_tab == 2: # Evento D
+                            mod["sections"][0]["items"] = ["liq_d_target"]
+                            mod["sections"][1]["items"] = ["liq_d_bonus"]
+                        elif current_tab == 3: # Dinámico
+                            mod["sections"][0]["items"] = ["liq_mode"]
+                            mod["sections"][1]["items"] = ["liq_dyn_sens", "liq_dyn_mult"]
+
+                    # --- DIBUJAR ENCABEZADO ---
+                    font_title = pygame.font.SysFont("Arial", int(SCREEN_H * 0.06), bold=True)
+                    font_tag = pygame.font.SysFont("Arial", int(SCREEN_H * 0.025), bold=True)
+                    font_tabs = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
                     font_cfg_title = pygame.font.SysFont("Arial", int(SCREEN_H * 0.05), bold=True)
-                    cfg_title = font_cfg_title.render("CONFIGURACION", True, (0, 220, 255))
-                    screen.blit(cfg_title, cfg_title.get_rect(center=(SCREEN_W // 2, int(SCREEN_H * 0.06))))
-                    # Dibujar opciones
-                    # Alto de fila dinamico: con muchas opciones (ahora hay ~15 con la
-                    # seccion de liquidez por likes) se achica para que entren todas
-                    opt_start_y = int(SCREEN_H * 0.12)
-                    opt_h = min(int(SCREEN_H * 0.07), int((SCREEN_H * 0.83) / max(1, len(config_options))))
-                    font_cfg_label_size = min(int(SCREEN_H * 0.022), int(opt_h * 0.34))
-                    font_cfg_val_size = min(int(SCREEN_H * 0.024), int(opt_h * 0.36))
-                    font_cfg_label = pygame.font.SysFont("Arial", font_cfg_label_size, bold=True)
-                    font_cfg_val = pygame.font.SysFont("Arial", font_cfg_val_size, bold=True)
-                    for idx, opt in enumerate(config_options):
-                        oy = opt_start_y + (idx * opt_h)
-                        if opt["type"] == "header":
-                            # Separador de seccion: sin fondo destacado, no seleccionable
-                            lbl = font_cfg_label.render(opt["label"], True, (0, 220, 255))
-                            screen.blit(lbl, lbl.get_rect(center=(SCREEN_W // 2, oy + (opt_h - 4) // 2)))
-                            continue
-                        # Fondo de fila (highlight si seleccionada)
-                        row_bg = pygame.Surface((int(SCREEN_W * 0.60), opt_h - 4), pygame.SRCALPHA)
-                        if idx == config_selected:
-                            row_bg.fill((0, 40, 60, 150))
+                    font_cfg_label = pygame.font.SysFont("Arial", int(SCREEN_H * 0.025), bold=True)
+                    
+                    # Título y Tag del Módulo
+                    title_surf = font_title.render(mod["title"], True, (255, 255, 255))
+                    screen.blit(title_surf, (int(SCREEN_W * 0.05), int(SCREEN_H * 0.06)))
+                    
+                    tag_surf = font_tag.render(mod["tag"], True, (0, 180, 220))
+                    tag_rect = tag_surf.get_rect(midleft=(title_surf.get_width() + int(SCREEN_W * 0.07), title_surf.get_rect(top=int(SCREEN_H * 0.06)).centery))
+                    pygame.draw.rect(screen, (0, 40, 60), tag_rect.inflate(20, 10), border_radius=15)
+                    pygame.draw.rect(screen, (0, 180, 220), tag_rect.inflate(20, 10), 1, border_radius=15)
+                    screen.blit(tag_surf, tag_rect)
+                    
+                    # Navegación de Pestañas (Top Right)
+                    tab_x = int(SCREEN_W * 0.95)
+                    for i, tname in enumerate(reversed(mod["tabs"])):
+                        t_idx = len(mod["tabs"]) - 1 - i
+                        is_sel = (t_idx == current_tab)
+                        t_surf = font_tabs.render(tname, True, (255, 255, 255) if is_sel else (100, 100, 110))
+                        t_rect = t_surf.get_rect(midright=(tab_x, int(SCREEN_H * 0.08)))
+                        if is_sel:
+                            pygame.draw.rect(screen, (0, 180, 220), t_rect.inflate(30, 15), border_radius=8)
+                            # Efecto brillo
+                            glow = pygame.Surface(t_rect.inflate(40, 25).size, pygame.SRCALPHA)
+                            pygame.draw.rect(glow, (0, 180, 220, 50), glow.get_rect(), border_radius=10)
+                            screen.blit(glow, t_rect.inflate(40, 25).topleft)
                         else:
-                            row_bg.fill((15, 18, 28, 80))
-                        row_x = SCREEN_W // 2 - int(SCREEN_W * 0.30)
-                        screen.blit(row_bg, (row_x, oy))
-                        if idx == config_selected:
-                            pygame.draw.rect(screen, (0, 180, 220), (row_x, oy, int(SCREEN_W * 0.60), opt_h - 4), 1, border_radius=3)
-                        # Label
-                        lbl = font_cfg_label.render(opt["label"], True, (200, 200, 210))
-                        screen.blit(lbl, (row_x + 15, oy + (opt_h - 4) // 2 - lbl.get_height() // 2))
-                        # Valor
-                        val_x = row_x + int(SCREEN_W * 0.40)
-                        val_cy = oy + (opt_h - 4) // 2
-                        if opt["type"] == "number":
-                            # Obtener valor actual
-                            if opt["key"] == "timer": val = cfg_timer
-                            elif opt["key"] == "risk": val = cfg_risk
-                            elif opt["key"] == "tp_mult": val = cfg_tp_mult
-                            elif opt["key"] == "bot_wr": val = cfg_bot_wr
-                            elif opt["key"] == "vol_music": val = cfg_vol_music
-                            elif opt["key"] == "vol_fx": val = cfg_vol_fx
-                            elif opt["key"] == "max_rr": val = cfg_max_rr
-                            elif opt["key"] == "liq_interval": val = cfg_liq_interval
-                            elif opt["key"] == "liq_a_target": val = cfg_liq_a_target
-                            elif opt["key"] == "liq_c1_likes": val = cfg_liq_c1_likes
-                            elif opt["key"] == "liq_c1_bonus": val = cfg_liq_c1_bonus
-                            elif opt["key"] == "liq_c2_likes": val = cfg_liq_c2_likes
-                            elif opt["key"] == "liq_c2_bonus": val = cfg_liq_c2_bonus
-                            elif opt["key"] == "liq_c3_likes": val = cfg_liq_c3_likes
-                            elif opt["key"] == "liq_c3_bonus": val = cfg_liq_c3_bonus
-                            elif opt["key"] == "liq_d_target": val = cfg_liq_d_target
-                            elif opt["key"] == "liq_d_bonus": val = cfg_liq_d_bonus
-                            else: val = 0
-                            if opt["key"] == "tp_mult":
-                                val_str = f"1:{val:.1f}"
-                            else:
-                                val_str = str(int(val))
-                            # Flechas < >
-                            arrow_color = (0, 220, 255) if idx == config_selected else (80, 80, 100)
-                            left_arrow = font_cfg_val.render("<", True, arrow_color)
-                            right_arrow = font_cfg_val.render(">", True, arrow_color)
-                            val_txt = font_cfg_val.render(val_str, True, (255, 255, 255))
-                            screen.blit(left_arrow, (val_x, val_cy - left_arrow.get_height() // 2))
-                            screen.blit(val_txt, val_txt.get_rect(center=(val_x + 60, val_cy)))
-                            screen.blit(right_arrow, (val_x + 100, val_cy - right_arrow.get_height() // 2))
-                        elif opt["type"] == "toggle":
-                            if opt["key"] == "bot_enabled": val = cfg_bot_enabled
-                            elif opt["key"] == "viewers_enabled": val = cfg_viewers_enabled
-                            else: val = False
-                            toggle_color = (38, 166, 154) if val else (239, 83, 80)
-                            toggle_txt = font_cfg_val.render("ON" if val else "OFF", True, toggle_color)
-                            screen.blit(toggle_txt, toggle_txt.get_rect(center=(val_x + 60, val_cy)))
-                        elif opt["type"] == "button":
-                            btn_color = (239, 83, 80) if idx == config_selected else (100, 40, 40)
-                            btn_rect = pygame.Rect(val_x, val_cy - 15, 120, 30)
-                            pygame.draw.rect(screen, btn_color, btn_rect, border_radius=5)
-                            btn_txt = font_cfg_label.render("RESET", True, (255, 255, 255))
+                            pygame.draw.rect(screen, (20, 24, 35), t_rect.inflate(30, 15), border_radius=8)
+                            pygame.draw.rect(screen, (40, 45, 60), t_rect.inflate(30, 15), 1, border_radius=8)
+                        
+                        screen.blit(t_surf, t_rect)
+                        tab_x -= t_rect.width + 45
+
+                    # --- DIBUJAR PANELES DE SECCIONES ---
+                    panel_w = int(SCREEN_W * 0.44)
+                    panel_h = int(SCREEN_H * 0.70)
+                    panel_y = int(SCREEN_H * 0.16)
+                    
+                    for s_idx, section in enumerate(mod["sections"]):
+                        px = int(SCREEN_W * 0.05) if s_idx == 0 else int(SCREEN_W * 0.51)
+                        # Fondo del panel
+                        panel_rect = pygame.Rect(px, panel_y, panel_w, panel_h)
+                        pygame.draw.rect(screen, (15, 18, 28, 200), panel_rect, border_radius=12)
+                        pygame.draw.rect(screen, (30, 35, 50), panel_rect, 1, border_radius=12)
+                        
+                        # Título de la sección
+                        font_sec = pygame.font.SysFont("Arial", int(SCREEN_H * 0.024), bold=True)
+                        sec_surf = font_sec.render(section["title"], True, (0, 180, 220))
+                        screen.blit(sec_surf, (px + 45, panel_y + 30))
+                        
+                        # Icono (placeholder visual)
+                        pygame.draw.circle(screen, (0, 180, 220), (px + 25, panel_y + 42), 4)
+                        
+                        # Dibujar Items
+                        item_y = panel_y + 80
+                        items_in_this_panel = section["items"]
+                        
+                        # En el Módulo Final, el panel derecho es especial (Reset)
+                        if current_mod == 3 and s_idx == 1:
+                            # Dibujar área de peligro
+                            warning_icon_font = pygame.font.SysFont("Segoe UI Symbol", 80)
+                            warn_surf = warning_icon_font.render("⚠", True, (239, 83, 80))
+                            screen.blit(warn_surf, warn_surf.get_rect(center=(px + panel_w//2, panel_y + panel_h//3)))
+                            
+                            font_warn_title = pygame.font.SysFont("Arial", 30, bold=True)
+                            font_warn_desc = pygame.font.SysFont("Arial", 20)
+                            
+                            w_title = font_warn_title.render("Restablecer Sistema", True, (239, 83, 80))
+                            w_desc = font_warn_desc.render("Vuelve todos los valores y el ranking a su estado de fábrica.", True, (150, 150, 160))
+                            
+                            screen.blit(w_title, w_title.get_rect(center=(px + panel_w//2, panel_y + panel_h//2 + 20)))
+                            screen.blit(w_desc, w_desc.get_rect(center=(px + panel_w//2, panel_y + panel_h//2 + 60)))
+                            
+                            # Botón Reset
+                            btn_rect = pygame.Rect(0, 0, 200, 50)
+                            btn_rect.center = (px + panel_w//2, panel_y + panel_h * 0.75)
+                            is_sel = (current_item_idx == 0 and current_tab == 1) # Simplificado
+                            pygame.draw.rect(screen, (239, 83, 80), btn_rect, border_radius=10)
+                            if is_sel:
+                                pygame.draw.rect(screen, (255, 255, 255), btn_rect, 2, border_radius=10)
+                            
+                            btn_txt = font_sec.render("RESET RANKING", True, (255, 255, 255))
                             screen.blit(btn_txt, btn_txt.get_rect(center=btn_rect.center))
-                    # Instrucciones abajo
-                    font_cfg_hint = pygame.font.SysFont("Arial", int(SCREEN_H * 0.015))
-                    hint_txt = font_cfg_hint.render("Flechas = Navegar | Izq/Der = Cambiar | ESC = Volver", True, (60, 80, 100))
+                            continue
+
+                        # Si no hay items (Módulo 3 tabs vacías), mostrar placeholder
+                        if not items_in_this_panel and current_mod == 2:
+                            font_empty = pygame.font.SysFont("Arial", 18, italic=True)
+                            empty_txt = font_empty.render("Sin opciones adicionales", True, (60, 65, 80))
+                            screen.blit(empty_txt, (px + 45, item_y))
+                            continue
+
+                        for i_idx, item_key in enumerate(items_in_this_panel):
+                            opt = config_items[item_key]
+                            # Detectar si este item está seleccionado
+                            is_item_selected = False
+                            if s_idx == 0 and current_item_idx == i_idx:
+                                is_item_selected = True
+                            elif s_idx == 1 and current_item_idx == i_idx + len(mod["sections"][0]["items"]):
+                                is_item_selected = True
+                            
+                            # Fila de item
+                            row_rect = pygame.Rect(px + 20, item_y, panel_w - 40, 55)
+                            pygame.draw.rect(screen, (25, 30, 45, 150), row_rect, border_radius=8)
+                            if is_item_selected:
+                                pygame.draw.rect(screen, (0, 180, 220), row_rect, 1, border_radius=8)
+                            
+                            # Label
+                            font_label = pygame.font.SysFont("Arial", 20, bold=True)
+                            lbl_surf = font_label.render(opt["label"], True, (200, 200, 210))
+                            screen.blit(lbl_surf, (row_rect.x + 20, row_rect.centery - lbl_surf.get_height() // 2))
+                            
+                            # Valor y controles
+                            val_x = row_rect.right - 140
+                            val_cy = row_rect.centery
+                            
+                            if opt["type"] == "number":
+                                # Obtener valor
+                                if item_key == "timer": val = cfg_timer
+                                elif item_key == "risk": val = cfg_risk
+                                elif item_key == "tp_mult": val = cfg_tp_mult
+                                elif item_key == "bot_wr": val = cfg_bot_wr
+                                elif item_key == "vol_music": val = cfg_vol_music
+                                elif item_key == "vol_fx": val = cfg_vol_fx
+                                elif item_key == "max_rr": val = cfg_max_rr
+                                elif item_key == "liq_interval": val = cfg_liq_interval
+                                elif item_key == "liq_a_target": val = cfg_liq_a_target
+                                elif item_key == "liq_c1_likes": val = cfg_liq_c1_likes
+                                elif item_key == "liq_c1_bonus": val = cfg_liq_c1_bonus
+                                elif item_key == "liq_c2_likes": val = cfg_liq_c2_likes
+                                elif item_key == "liq_c2_bonus": val = cfg_liq_c2_bonus
+                                elif item_key == "liq_c3_likes": val = cfg_liq_c3_likes
+                                elif item_key == "liq_c3_bonus": val = cfg_liq_c3_bonus
+                                elif item_key == "liq_d_target": val = cfg_liq_d_target
+                                elif item_key == "liq_d_bonus": val = cfg_liq_d_bonus
+                                elif item_key == "liq_dyn_sens": val = cfg_liq_dyn_sens
+                                elif item_key == "liq_dyn_mult": val = cfg_liq_dyn_mult
+                                else: val = 0
+                                
+                                val_str = f"x{val:.1f}" if item_key == "liq_dyn_mult" else (f"1:{val:.1f}" if item_key == "tp_mult" else str(int(val)))
+                                
+                                # Control numérico con flechas
+                                ctrl_rect = pygame.Rect(val_x, val_cy - 15, 120, 30)
+                                pygame.draw.rect(screen, (15, 20, 30), ctrl_rect, border_radius=5)
+                                pygame.draw.rect(screen, (40, 45, 60), ctrl_rect, 1, border_radius=5)
+                                
+                                font_val = pygame.font.SysFont("Arial", 18, bold=True)
+                                v_surf = font_val.render(val_str, True, (255, 255, 255))
+                                screen.blit(v_surf, v_surf.get_rect(center=ctrl_rect.center))
+                                
+                                # Flechas
+                                arrow_font = pygame.font.SysFont("Arial", 18, bold=True)
+                                a_color = (0, 180, 220) if is_item_selected else (60, 65, 80)
+                                l_arr = arrow_font.render("<", True, a_color)
+                                r_arr = arrow_font.render(">", True, a_color)
+                                screen.blit(l_arr, (ctrl_rect.left + 8, ctrl_rect.centery - l_arr.get_height() // 2))
+                                screen.blit(r_arr, (ctrl_rect.right - 18, ctrl_rect.centery - r_arr.get_height() // 2))
+                                
+                            elif opt["type"] == "toggle":
+                                if item_key == "bot_enabled": val = cfg_bot_enabled
+                                elif item_key == "viewers_enabled": val = cfg_viewers_enabled
+                                elif item_key == "liq_mode": val = cfg_liq_mode
+                                else: val = False
+                                
+                                t_rect = pygame.Rect(val_x + 50, val_cy - 12, 60, 24)
+                                t_color = (38, 166, 154) if val else (239, 83, 80)
+                                pygame.draw.rect(screen, t_color, t_rect, border_radius=12)
+                                
+                                font_t = pygame.font.SysFont("Arial", 14, bold=True)
+                                t_surf = font_t.render("ON" if val else "OFF", True, (255, 255, 255))
+                                screen.blit(t_surf, t_surf.get_rect(center=t_rect.center))
+                                
+                            elif opt["type"] == "color":
+                                if item_key == "color_bg": val = parse_color(cfg_color_bg)
+                                elif item_key == "color_bull": val = parse_color(cfg_color_bull)
+                                elif item_key == "color_bear": val = parse_color(cfg_color_bear)
+                                else: val = (255, 255, 255)
+                                
+                                c_rect = pygame.Rect(val_x + 50, val_cy - 12, 60, 24)
+                                pygame.draw.rect(screen, val, c_rect, border_radius=6)
+                                pygame.draw.rect(screen, (200, 200, 200), c_rect, 1, border_radius=6)
+                                
+                                # Flechas para color (visual)
+                                a_color = (0, 180, 220) if is_item_selected else (60, 65, 80)
+                                l_arr = arrow_font.render("<", True, a_color)
+                                r_arr = arrow_font.render(">", True, a_color)
+                                screen.blit(l_arr, (val_x + 20, val_cy - l_arr.get_height() // 2))
+                                screen.blit(r_arr, (val_x + 120, val_cy - r_arr.get_height() // 2))
+                                
+                            elif opt["type"] == "info":
+                                i_surf = font_label.render(opt["value"], True, opt["color"])
+                                screen.blit(i_surf, i_surf.get_rect(midright=(row_rect.right - 20, row_rect.centery)))
+
+                            item_y += 65
+
+                    # --- INSTRUCCIONES ABAJO ---
+                    font_hint = pygame.font.SysFont("Arial", 16)
+                    hint_txt = font_hint.render("Pestañas = Filtrar Eventos    Izq/Der = Cambiar Valores    ENTER = Seleccionar", True, (80, 85, 100))
                     screen.blit(hint_txt, hint_txt.get_rect(center=(SCREEN_W // 2, int(SCREEN_H * 0.94))))
                     # Confirmación de reset
                     if config_confirm_reset:
@@ -1864,16 +2103,28 @@ while app_running:
                         elif cfg_event.type == pygame.KEYDOWN:
                             if config_confirm_reset:
                                 if cfg_event.key == pygame.K_RETURN:
-                                    from database import reset_all_players
+                                    from database import reset_all_players, DB_PATH
+                                    import os
                                     try:
-                                        reset_all_players()
+                                        # Verificar existencia de la DB antes de proceder
+                                        if os.path.exists(DB_PATH):
+                                            reset_all_players()
+                                        else:
+                                            print(f"[ERROR RESET] Base de datos no encontrada en: {DB_PATH}")
                                     except Exception as e:
-                                        print(f"[ERROR RESET] {e}")
+                                        print(f"[ERROR RESET] Excepción durante el reinicio: {e}")
+                                    
+                                    # Restablecer valores locales de forma segura
                                     fxp_balance = 10000
                                     wins = 0
                                     losses = 0
                                     trade_history.clear()
-                                    top_viewers = load_top_viewers()
+                                    try:
+                                        top_viewers = load_top_viewers()
+                                    except Exception as e:
+                                        print(f"[ERROR RESET] No se pudo recargar el ranking: {e}")
+                                        top_viewers = []
+                                    
                                     config_confirm_reset = False
                                 elif cfg_event.key == pygame.K_ESCAPE:
                                     config_confirm_reset = False
@@ -1900,6 +2151,13 @@ while app_running:
                                     _set_cfg("liq_c3_bonus", str(cfg_liq_c3_bonus))
                                     _set_cfg("liq_d_target", str(cfg_liq_d_target))
                                     _set_cfg("liq_d_bonus", str(cfg_liq_d_bonus))
+                                    _set_cfg("liq_mode", "1" if cfg_liq_mode else "0")
+                                    _set_cfg("liq_dyn_sens", str(cfg_liq_dyn_sens))
+                                    _set_cfg("liq_dyn_mult", str(cfg_liq_dyn_mult))
+                                    _set_cfg("color_bg", cfg_color_bg)
+                                    _set_cfg("color_bull", cfg_color_bull)
+                                    _set_cfg("color_bear", cfg_color_bear)
+                                    
                                     # Aplicar al juego
                                     TIMER_DURATION = cfg_timer * 1000
                                     TRADE_RISK = cfg_risk
@@ -1918,85 +2176,203 @@ while app_running:
                                     ]
                                     LIQUIDITY_D_TARGET = cfg_liq_d_target
                                     LIQUIDITY_D_BONUS = cfg_liq_d_bonus
+                                    GLOBAL_COLOR_BG = parse_color(cfg_color_bg)
+                                    GLOBAL_COLOR_BULL = parse_color(cfg_color_bull)
+                                    GLOBAL_COLOR_BEAR = parse_color(cfg_color_bear)
                                     if sound_game_music is not None:
                                         sound_game_music.set_volume(cfg_vol_music / 100.0)
                                     if music_playing:
                                         pygame.mixer.music.set_volume(cfg_vol_music / 100.0)
                                     if sound_ambient is not None:
                                         sound_ambient.set_volume(cfg_vol_music / 100.0)
-                                    if sound_ambient is not None:
-                                        sound_ambient.set_volume(cfg_vol_music / 100.0)
-                                    # Aplicar volumen de efectos a todos los sonidos
+                                    
+                                    # Aplicar volumen de efectos
                                     fx_vol = cfg_vol_fx / 100.0
                                     for s in [sound_bos, sound_fractal, sound_win, sound_loss, sound_zoom, sound_tick, sound_levelup]:
-                                        if s is not None:
-                                            s.set_volume(fx_vol)
+                                        if s is not None: s.set_volume(fx_vol)
                                     for s in zona_voices + lean_buy_voices + lean_sell_voices + voz_win_voices + voz_loss_voices:
-                                        if s is not None:
-                                            s.set_volume(fx_vol)
+                                        if s is not None: s.set_volume(fx_vol)
                                     in_config = False
+                                
+                                # Navegación Superior (Módulos 1-4)
+                                elif cfg_event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
+                                    current_mod = cfg_event.key - pygame.K_1
+                                    current_tab = 0
+                                    current_item_idx = 0
+                                
+                                # Navegación de Pestañas/Eventos (Teclas Izquierda/Derecha en la barra superior o TAB)
+                                elif cfg_event.key == pygame.K_TAB:
+                                    mod = config_modules[current_mod]
+                                    current_tab = (current_tab + 1) % len(mod["tabs"])
+                                    current_item_idx = 0
+                                
+                                # Navegación entre Módulos con Flechas Izquierda/Derecha si no hay item seleccionado? 
+                                # No, el usuario dijo Izq/Der para cambiar valores.
+                                
+                                # Navegación de Items (Flechas Arriba/Abajo)
                                 elif cfg_event.key == pygame.K_DOWN:
-                                    config_selected = (config_selected + 1) % len(config_options)
-                                    while config_options[config_selected]["type"] == "header":
-                                        config_selected = (config_selected + 1) % len(config_options)
+                                    mod = config_modules[current_mod]
+                                    total_items = len(mod["sections"][0]["items"]) + len(mod["sections"][1]["items"])
+                                    if current_mod == 3 and current_tab == 1: # Caso Reset
+                                        total_items = 1
+                                    if total_items > 0:
+                                        current_item_idx = (current_item_idx + 1) % total_items
                                 elif cfg_event.key == pygame.K_UP:
-                                    config_selected = (config_selected - 1) % len(config_options)
-                                    while config_options[config_selected]["type"] == "header":
-                                        config_selected = (config_selected - 1) % len(config_options)
+                                    mod = config_modules[current_mod]
+                                    total_items = len(mod["sections"][0]["items"]) + len(mod["sections"][1]["items"])
+                                    if current_mod == 3 and current_tab == 1: # Caso Reset
+                                        total_items = 1
+                                    if total_items > 0:
+                                        current_item_idx = (current_item_idx - 1) % total_items
+                                
+                                # Cambio de Valores (Flechas Izquierda/Derecha)
                                 elif cfg_event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                                    opt = config_options[config_selected]
-                                    direction = 1 if cfg_event.key == pygame.K_RIGHT else -1
-                                    if opt["type"] == "number":
-                                        if opt["key"] == "timer":
-                                            cfg_timer = max(opt["min"], min(opt["max"], cfg_timer + opt["step"] * direction))
-                                        elif opt["key"] == "risk":
-                                            cfg_risk = max(opt["min"], min(opt["max"], cfg_risk + opt["step"] * direction))
-                                        elif opt["key"] == "tp_mult":
-                                            cfg_tp_mult = max(opt["min"], min(opt["max"], cfg_tp_mult + opt["step"] * direction))
-                                        elif opt["key"] == "bot_wr":
-                                            cfg_bot_wr = max(opt["min"], min(opt["max"], cfg_bot_wr + opt["step"] * direction))
-                                        elif opt["key"] == "vol_music":
-                                            cfg_vol_music = max(opt["min"], min(opt["max"], cfg_vol_music + opt["step"] * direction))
-                                        elif opt["key"] == "vol_fx":
-                                            cfg_vol_fx = max(opt["min"], min(opt["max"], cfg_vol_fx + opt["step"] * direction))
-                                        elif opt["key"] == "max_rr":
-                                            cfg_max_rr = max(opt["min"], min(opt["max"], cfg_max_rr + opt["step"] * direction))
-                                        elif opt["key"] == "liq_interval":
-                                            cfg_liq_interval = max(opt["min"], min(opt["max"], cfg_liq_interval + opt["step"] * direction))
-                                        elif opt["key"] == "liq_a_target":
-                                            cfg_liq_a_target = max(opt["min"], min(opt["max"], cfg_liq_a_target + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c1_likes":
-                                            cfg_liq_c1_likes = max(opt["min"], min(opt["max"], cfg_liq_c1_likes + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c1_bonus":
-                                            cfg_liq_c1_bonus = max(opt["min"], min(opt["max"], cfg_liq_c1_bonus + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c2_likes":
-                                            cfg_liq_c2_likes = max(opt["min"], min(opt["max"], cfg_liq_c2_likes + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c2_bonus":
-                                            cfg_liq_c2_bonus = max(opt["min"], min(opt["max"], cfg_liq_c2_bonus + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c3_likes":
-                                            cfg_liq_c3_likes = max(opt["min"], min(opt["max"], cfg_liq_c3_likes + opt["step"] * direction))
-                                        elif opt["key"] == "liq_c3_bonus":
-                                            cfg_liq_c3_bonus = max(opt["min"], min(opt["max"], cfg_liq_c3_bonus + opt["step"] * direction))
-                                        elif opt["key"] == "liq_d_target":
-                                            cfg_liq_d_target = max(opt["min"], min(opt["max"], cfg_liq_d_target + opt["step"] * direction))
-                                        elif opt["key"] == "liq_d_bonus":
-                                            cfg_liq_d_bonus = max(opt["min"], min(opt["max"], cfg_liq_d_bonus + opt["step"] * direction))
-                                    elif opt["type"] == "toggle":
-                                        if opt["key"] == "bot_enabled":
-                                            cfg_bot_enabled = not cfg_bot_enabled
-                                        elif opt["key"] == "viewers_enabled":
-                                            cfg_viewers_enabled = not cfg_viewers_enabled
+                                    mod = config_modules[current_mod]
+                                    all_items = mod["sections"][0]["items"] + mod["sections"][1]["items"]
+                                    
+                                    if current_item_idx < len(all_items):
+                                        item_key = all_items[current_item_idx]
+                                        opt = config_items[item_key]
+                                        direction = 1 if cfg_event.key == pygame.K_RIGHT else -1
+                                        
+                                        if opt["type"] == "number":
+                                            if item_key == "timer": cfg_timer = max(opt["min"], min(opt["max"], cfg_timer + opt["step"] * direction))
+                                            elif item_key == "risk": cfg_risk = max(opt["min"], min(opt["max"], cfg_risk + opt["step"] * direction))
+                                            elif item_key == "tp_mult": cfg_tp_mult = max(opt["min"], min(opt["max"], cfg_tp_mult + opt["step"] * direction))
+                                            elif item_key == "bot_wr": cfg_bot_wr = max(opt["min"], min(opt["max"], cfg_bot_wr + opt["step"] * direction))
+                                            elif item_key == "vol_music": cfg_vol_music = max(opt["min"], min(opt["max"], cfg_vol_music + opt["step"] * direction))
+                                            elif item_key == "vol_fx": cfg_vol_fx = max(opt["min"], min(opt["max"], cfg_vol_fx + opt["step"] * direction))
+                                            elif item_key == "max_rr": cfg_max_rr = max(opt["min"], min(opt["max"], cfg_max_rr + opt["step"] * direction))
+                                            elif item_key == "liq_interval": cfg_liq_interval = max(opt["min"], min(opt["max"], cfg_liq_interval + opt["step"] * direction))
+                                            elif item_key == "liq_a_target": cfg_liq_a_target = max(opt["min"], min(opt["max"], cfg_liq_a_target + opt["step"] * direction))
+                                            elif item_key == "liq_c1_likes": cfg_liq_c1_likes = max(opt["min"], min(opt["max"], cfg_liq_c1_likes + opt["step"] * direction))
+                                            elif item_key == "liq_c1_bonus": cfg_liq_c1_bonus = max(opt["min"], min(opt["max"], cfg_liq_c1_bonus + opt["step"] * direction))
+                                            elif item_key == "liq_c2_likes": cfg_liq_c2_likes = max(opt["min"], min(opt["max"], cfg_liq_c2_likes + opt["step"] * direction))
+                                            elif item_key == "liq_c2_bonus": cfg_liq_c2_bonus = max(opt["min"], min(opt["max"], cfg_liq_c2_bonus + opt["step"] * direction))
+                                            elif item_key == "liq_c3_likes": cfg_liq_c3_likes = max(opt["min"], min(opt["max"], cfg_liq_c3_likes + opt["step"] * direction))
+                                            elif item_key == "liq_c3_bonus": cfg_liq_c3_bonus = max(opt["min"], min(opt["max"], cfg_liq_c3_bonus + opt["step"] * direction))
+                                            elif item_key == "liq_d_target": cfg_liq_d_target = max(opt["min"], min(opt["max"], cfg_liq_d_target + opt["step"] * direction))
+                                            elif item_key == "liq_d_bonus": cfg_liq_d_bonus = max(opt["min"], min(opt["max"], cfg_liq_d_bonus + opt["step"] * direction))
+                                            elif item_key == "liq_dyn_sens": cfg_liq_dyn_sens = max(opt["min"], min(opt["max"], cfg_liq_dyn_sens + opt["step"] * direction))
+                                            elif item_key == "liq_dyn_mult": cfg_liq_dyn_mult = max(opt["min"], min(opt["max"], cfg_liq_dyn_mult + opt["step"] * direction))
+                                        
+                                        elif opt["type"] == "toggle":
+                                            if item_key == "bot_enabled": cfg_bot_enabled = not cfg_bot_enabled
+                                            elif item_key == "viewers_enabled": cfg_viewers_enabled = not cfg_viewers_enabled
+                                            elif item_key == "liq_mode": cfg_liq_mode = not cfg_liq_mode
+                                            
+                                        elif opt["type"] == "color":
+                                            # Selector rápido de presets
+                                            presets = []
+                                            if item_key == "color_bg": presets = COLOR_PRESETS_BG
+                                            elif item_key == "color_bull": presets = COLOR_PRESETS_BULL
+                                            elif item_key == "color_bear": presets = COLOR_PRESETS_BEAR
+                                            
+                                            if presets:
+                                                curr_rgb = parse_color(cfg_color_bg if item_key == "color_bg" else (cfg_color_bull if item_key == "color_bull" else cfg_color_bear))
+                                                try:
+                                                    idx = presets.index(curr_rgb)
+                                                    new_idx = (idx + direction) % len(presets)
+                                                except:
+                                                    new_idx = 0
+                                                
+                                                new_rgb = presets[new_idx]
+                                                new_val = f"{new_rgb[0]},{new_rgb[1]},{new_rgb[2]}"
+                                                if item_key == "color_bg": cfg_color_bg = new_val
+                                                elif item_key == "color_bull": cfg_color_bull = new_val
+                                                elif item_key == "color_bear": cfg_color_bear = new_val
+
+                                # Selección / Acción (ENTER)
                                 elif cfg_event.key == pygame.K_RETURN:
-                                    opt = config_options[config_selected]
-                                    if opt["type"] == "button" and opt["key"] == "reset":
+                                    mod = config_modules[current_mod]
+                                    all_items = mod["sections"][0]["items"] + mod["sections"][1]["items"]
+                                    
+                                    # Caso especial: Reset Ranking
+                                    if current_mod == 3 and current_tab == 1:
                                         config_confirm_reset = True
-            menu_click_btn = None
-        # Áreas de botones calibradas con clicks en 1366x768
+                                        continue
+
+                                    if current_item_idx < len(all_items):
+                                        item_key = all_items[current_item_idx]
+                                        opt = config_items[item_key]
+                                        
+                                        if opt["type"] == "color":
+                                            curr_val = cfg_color_bg if item_key == "color_bg" else (cfg_color_bull if item_key == "color_bull" else cfg_color_bear)
+                                            new_rgb = pick_color(parse_color(curr_val))
+                                            if new_rgb:
+                                                new_val = f"{new_rgb[0]},{new_rgb[1]},{new_rgb[2]}"
+                                                if item_key == "color_bg": cfg_color_bg = new_val
+                                                elif item_key == "color_bull": cfg_color_bull = new_val
+                                                elif item_key == "color_bear": cfg_color_bear = new_val
+                        
+                        elif cfg_event.type == pygame.MOUSEBUTTONDOWN and cfg_event.button == 1:
+                            mx, my = cfg_event.pos
+                            
+                            # Click en Pestañas (Top Right)
+                            tab_x = int(SCREEN_W * 0.95)
+                            mod = config_modules[current_mod]
+                            for i, tname in enumerate(reversed(mod["tabs"])):
+                                t_idx = len(mod["tabs"]) - 1 - i
+                                t_surf = font_tabs.render(tname, True, (255, 255, 255))
+                                t_rect = t_surf.get_rect(midright=(tab_x, int(SCREEN_H * 0.08)))
+                                click_rect = t_rect.inflate(30, 15)
+                                if click_rect.collidepoint(mx, my):
+                                    current_tab = t_idx
+                                    current_item_idx = 0
+                                    break
+                                tab_x -= t_rect.width + 45
+                            
+                            # Click en Módulos (Top Left)
+                            mod_x = int(SCREEN_W * 0.05)
+                            for i, m in enumerate(config_modules):
+                                # Aproximación del área del título/tag para click (Módulo 1, 2, 3, 4)
+                                m_title_surf = font_title.render(m["title"], True, (255, 255, 255))
+                                m_rect = m_title_surf.get_rect(topleft=(int(SCREEN_W * 0.05), int(SCREEN_H * 0.06)))
+                                if m_rect.inflate(20, 20).collidepoint(mx, my):
+                                    current_mod = (current_mod + 1) % len(config_modules)
+                                    current_tab = 0
+                                    current_item_idx = 0
+                                    break
+                            
+                            # Click en Items para seleccionar
+                            all_items = mod["sections"][0]["items"] + mod["sections"][1]["items"]
+                            panel_y = int(SCREEN_H * 0.16)
+                            panel_w = int(SCREEN_W * 0.44)
+                            
+                            for s_idx, section in enumerate(mod["sections"]):
+                                px = int(SCREEN_W * 0.05) if s_idx == 0 else int(SCREEN_W * 0.51)
+                                item_y = panel_y + 80
+                                for i_idx, item_key in enumerate(section["items"]):
+                                    row_rect = pygame.Rect(px + 20, item_y, panel_w - 40, 55)
+                                    if row_rect.collidepoint(mx, my):
+                                        if s_idx == 0:
+                                            current_item_idx = i_idx
+                                        else:
+                                            current_item_idx = i_idx + len(mod["sections"][0]["items"])
+                                        
+                                        opt = config_items[item_key]
+                                        if opt["type"] == "toggle":
+                                            if item_key == "bot_enabled": cfg_bot_enabled = not cfg_bot_enabled
+                                            elif item_key == "viewers_enabled": cfg_viewers_enabled = not cfg_viewers_enabled
+                                            elif item_key == "liq_mode": cfg_liq_mode = not cfg_liq_mode
+                                        break
+                                    item_y += 65
+
+                    pygame.display.flip()
+
+                # Al salir de la configuración, volver al menú principal
+                pygame.event.clear()
+                pygame.time.wait(200)
+                menu_click_btn = None
+
+        # --- DIBUJAR MENÚ PRINCIPAL ---
+        # Botones del menú principal
         btn_w = int(SCREEN_W * 0.28)
         btn_h = int(SCREEN_H * 0.08)
         btn_iniciar = pygame.Rect(int(SCREEN_W * (681/1366)) - btn_w // 2, int(SCREEN_H * (341/768)) - btn_h // 2, btn_w, btn_h)
         btn_ranking = pygame.Rect(int(SCREEN_W * (686/1366)) - btn_w // 2, int(SCREEN_H * (476/768)) - btn_h // 2, btn_w, btn_h)
         btn_config = pygame.Rect(int(SCREEN_W * (952/1920)) - btn_w // 2, int(SCREEN_H * (862/1080)) - btn_h // 2, btn_w, btn_h)
+        
         # Dibujar efecto click (oscurecer en el centro del botón)
         buttons = [("iniciar", btn_iniciar), ("ranking", btn_ranking), ("config", btn_config)]
         for btn_name, btn_rect in buttons:
@@ -2005,7 +2381,6 @@ while app_running:
                 dark_surface.fill((0, 0, 0, 80))
                 screen.blit(dark_surface, (btn_rect.x, btn_rect.y))
         pygame.display.flip()
-    
 
     # --- GAME LOOP ---
     running = True
@@ -2013,11 +2388,10 @@ while app_running:
     while running and app_running:
         clock.tick(60)
         current_time = pygame.time.get_ticks()
-        screen.fill((30, 30, 30))
+        screen.fill(GLOBAL_COLOR_BG)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-<<<<<<< HEAD
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     # Diálogo de pausa: ¿Volver al menú o cerrar?
@@ -2369,164 +2743,23 @@ while app_running:
         elif not zone_frozen and liquidity_event_active is None:
             if current_time - last_tick_time >= TICK_DELAY:
                 step_size = random.uniform(0.4, 1.8)
-                # Sesgo del bot: 65% probabilidad de ir en su dirección
-                if bot_bias_active and active_trade is not None:
+                
+                # 1. Agotamiento de mercado (Prioridad Máxima - Forzar Reversa/BOS)
+                if market_exhaustion_active:
+                    if current_time - market_exhaustion_start < MARKET_EXHAUSTION_DURATION:
+                        # Forzar movimiento agresivo en dirección contraria (95% probabilidad)
+                        # Aumentamos el step_size para asegurar que rompa estructura
+                        boosted_step = step_size * 1.5
+                        tick_move = boosted_step * market_exhaustion_dir if random.random() < 0.95 else -boosted_step * market_exhaustion_dir
+                    else:
+                        market_exhaustion_active = False
+                        tick_move = step_size if random.random() < 0.5 else -step_size
+                # 2. Sesgo del bot
+                elif bot_bias_active and active_trade is not None:
                     tick_move = step_size * bot_bias_direction if random.random() < 0.65 else -step_size * bot_bias_direction
-=======
-    if current_time - last_tick_time >= TICK_DELAY:
-        step_size = random.uniform(0.4, 1.8)
-        tick_move = step_size if random.random() < 0.5 else -step_size
-        current_candle["close"] += tick_move
-        current_candle["high"] = max(current_candle["high"], current_candle["close"])
-        current_candle["low"] = min(current_candle["low"], current_candle["close"])
-        last_tick_time = current_time
-    if current_time - last_candle_time >= CANDLE_DURATION:
-        candles.append(current_candle.copy())
-        if len(candles) > 1000:
-            candles.pop(0)
-            for bos in bos_markers:
-                bos["level_index"] -= 1
-                bos["break_index"] -= 1
-            bos_markers[:] = [b for b in bos_markers if b["break_index"] >= 0]
-            for f in confirmed_fractals:
-                f["index"] -= 1
-            confirmed_fractals[:] = [f for f in confirmed_fractals if f["index"] >= 0]
-            last_checked_index -= 1
-            if range_high_index is not None:
-                range_high_index -= 1
-            if range_low_index is not None:
-                range_low_index -= 1
-            if prev_range_low_index is not None:
-                prev_range_low_index -= 1
-            if prev_range_high_index is not None:
-                prev_range_high_index -= 1
-            if active_ob is not None:
-                active_ob["index"] -= 1
-                if "end_index" in active_ob:
-                    active_ob["end_index"] -= 1
-                if active_ob["index"] < 0:
-                    active_ob = None
-            if prev_ob is not None:
-                prev_ob["index"] -= 1
-                if "end_index" in prev_ob:
-                    prev_ob["end_index"] -= 1
-                if prev_ob["index"] < 0:
-                    prev_ob = None
-            if active_decisional is not None:
-                active_decisional["index"] -= 1
-                if active_decisional["index"] < 0:
-                    active_decisional = None
-            if active_fvg is not None:
-                active_fvg["index"] -= 1
-                if active_fvg["index"] < 0:
-                    active_fvg = None
-            for lq in liquidity_levels:
-                lq["first_index"] -= 1
-                lq["last_index"] -= 1
-            liquidity_levels[:] = [lq for lq in liquidity_levels if lq["first_index"] >= 0]
-        current_len = len(candles)
-        bos_markers[:] = [b for b in bos_markers if current_len - b["break_index"] <= 999]
-        confirmed_fractals[:] = [f for f in confirmed_fractals if current_len - f["index"] <= 999]
-        process_new_candle(candles, len(candles) - 1)
-        # Mitigar liquidez si el precio cruzo un nivel
-        liquidity_levels = mitigate_liquidity(candles, liquidity_levels, len(candles) - 1)
-        last_checked_index = len(candles)
-        current_candle = {"open": candles[-1]["close"], "close": candles[-1]["close"], "high": candles[-1]["close"], "low": candles[-1]["close"]}
-        last_candle_time = current_time
-    all_candles = candles + [current_candle]
-    total_len = len(all_candles)
-    needed_count = 100
-    if prev_range_low_index is not None:
-        distance = total_len - prev_range_low_index
-        if distance > needed_count:
-            needed_count = distance + 10
-    if prev_range_high_index is not None:
-        distance = total_len - prev_range_high_index
-        if distance > needed_count:
-            needed_count = distance + 10
-    if range_phase == "rango_definido":
-        if range_high_index is not None:
-            distance = total_len - range_high_index
-            if distance > needed_count:
-                needed_count = distance + 10
-        if range_low_index is not None:
-            distance = total_len - range_low_index
-            if distance > needed_count:
-                needed_count = distance + 10
-    needed_count = max(100, min(needed_count, 300))
-    new_target = float(needed_count)
-    # Sonido de ZOOM cuando el zoom cambia significativamente
-    if abs(new_target - target_visible_count) > 15:
-        play_sound(sound_zoom)
-    target_visible_count = new_target
-    current_visible_count += (target_visible_count - current_visible_count) * 0.08
-    num_visible = int(current_visible_count)
-    visible_candles = all_candles[-num_visible:]
-    if visible_candles:
-        all_highs = [c["high"] for c in visible_candles]
-        all_lows = [c["low"] for c in visible_candles]
-        max_p = max(all_highs)
-        min_p = min(all_lows)
-        price_range = max_p - min_p
-        if price_range == 0:
-            price_range = 1.0
-        vertical_zoom = 950.0 / price_range
-        view_center_price = min_p + price_range / 2
-        center_y = 540
-        chart_start_x = 0
-        chart_end_x = int(1920 * 0.70)
-        available_width = chart_end_x - chart_start_x
-        spacing = available_width / max(num_visible - 1, 1)
-        candle_width = max(3, int(spacing * 0.65))
-        start_x = chart_start_x
-        total_candles = len(all_candles)
-        visible_start_global = total_candles - len(visible_candles)
-        # --- RENDERIZAR ORDER BLOCKS, DECISIONAL, FVG ---
-        ob_surface = pygame.Surface((1920, 1080), pygame.SRCALPHA)
-        for ob_data, ob_opacity, ob_label in [(prev_ob, 20, ""), (active_ob, 40, "EXTREMO")]:
-            if ob_data is None:
-                continue
-            ob_vis = ob_data["index"] - visible_start_global
-            if ob_vis >= len(visible_candles):
-                continue
-            if ob_vis < 0:
-                ob_x_start = 0
-            else:
-                ob_x_start = int(start_x + (ob_vis * spacing))
-            if "end_index" in ob_data:
-                ob_end_vis = ob_data["end_index"] - visible_start_global
-                if ob_end_vis < 0:
-                    continue
-                ob_x_end = int(start_x + (ob_end_vis * spacing)) + candle_width
-            else:
-                ob_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
-            ob_y_high = center_y - int((ob_data["high"] - view_center_price) * vertical_zoom)
-            ob_y_low = center_y - int((ob_data["low"] - view_center_price) * vertical_zoom)
-            ob_height = max(1, ob_y_low - ob_y_high)
-            ob_width = max(1, ob_x_end - ob_x_start)
-            if ob_data["type"] == "ALCISTA":
-                ob_color = (38, 166, 154, ob_opacity)
-            else:
-                ob_color = (239, 83, 80, ob_opacity)
-            pygame.draw.rect(ob_surface, ob_color, (ob_x_start, ob_y_high, ob_width, ob_height))
-            if ob_label:
-                label_txt = font_ob.render(ob_label, True, (255, 255, 255))
-                label_rect = label_txt.get_rect(center=(ob_x_start + ob_width // 2, ob_y_high + ob_height // 2))
-                ob_surface.blit(label_txt, label_rect)
-        if active_decisional is not None:
-            dec_vis = active_decisional["index"] - visible_start_global
-            if 0 <= dec_vis < len(visible_candles):
-                dec_x_start = int(start_x + (dec_vis * spacing))
-                dec_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
-                dec_y_high = center_y - int((active_decisional["high"] - view_center_price) * vertical_zoom)
-                dec_y_low = center_y - int((active_decisional["low"] - view_center_price) * vertical_zoom)
-                dec_height = max(1, dec_y_low - dec_y_high)
-                dec_width = max(1, dec_x_end - dec_x_start)
-                if active_decisional["type"] == "ALCISTA":
-                    dec_color = (38, 166, 154, 30)
->>>>>>> origin/main
                 else:
                     tick_move = step_size if random.random() < 0.5 else -step_size
+                
                 current_candle["close"] += tick_move
                 current_candle["high"] = max(current_candle["high"], current_candle["close"])
                 current_candle["low"] = min(current_candle["low"], current_candle["close"])
@@ -2539,7 +2772,7 @@ while app_running:
                     for g_dir, grp in active_trade["groups"].items():
                         if grp.get("resolved") or active_trade.get("cerrada"): continue
                         
-                        # 1. Evaluar Stop Loss
+                        # 1. Evaluar Riesgo (Stop Loss)
                         sl_hit = False
                         if g_dir == "BUY" and current_price <= grp["sl"]:
                             sl_hit = True
@@ -2549,10 +2782,10 @@ while app_running:
                         if sl_hit:
                             # BORRADO QUIRÚRGICO: Solo marcamos este bando como resuelto
                             grp["resolved"] = True
-                            grp["flash"] = {"start": current_time, "color": (239, 83, 80)}
+                            grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BEAR}
                             SL_HIT_AUDIO_FLAG = True
                             audio_manager.set_force_pause(True)
-                            audio_manager.play(f"{g_dir.lower()}_sl.mp3", pausar_mercado=True)
+                            audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_sl.mp3", pausar_mercado=True)
                             voice_freeze_start = current_time
                             trade_loss(TRADE_RISK, 1.0)
                             trade_history.append({"type": g_dir, "result": "LOSS", "pnl": -TRADE_RISK})
@@ -2561,8 +2794,8 @@ while app_running:
                             if g_dir == bot_decision:
                                 flash_active = True
                                 flash_start_time = current_time
-                                flash_color = (239, 83, 80)
-                                flash_text = "LOSS -1%"
+                                flash_color = GLOBAL_COLOR_BEAR
+                                flash_text = "-100 FXP"
                                 total_operations += 1
                                 if voz_loss_voices and viewer_trade_active is None:
                                     audio_manager.play(f"VOZ_LOSS_{random.randint(1, 7)}.mp3")
@@ -2584,32 +2817,28 @@ while app_running:
                                 
                             if tp_hit:
                                 lvl["resolved"] = True
-                                grp["flash"] = {"start": current_time, "color": (38, 166, 154)}
+                                grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
                                 trade_win(TRADE_RISK * lvl["rr"], lvl["rr"])
                                 trade_history.append({"type": g_dir, "result": "WIN", "pnl": TRADE_RISK * lvl["rr"]})
                                 
-                                # Audio de TP (tp1.mp3, tp2.mp3, etc.)
-                                audio_manager.set_force_pause(True)
-                                audio_manager.play(f"{g_dir.lower()}_tp{int(lvl['rr'])}.mp3", pausar_mercado=True)
-                                voice_freeze_start = current_time
-                                
-                                # Si llega al TP máximo definido por TP_MULTIPLIER, marcar grupo como resuelto
-                                if lvl["rr"] >= TP_MULTIPLIER:
-                                    # Pero solo si es el bando principal disparamos el flash de pantalla
-                                    if g_dir == bot_decision:
-                                        flash_active = True
-                                        flash_start_time = current_time
-                                        flash_color = (38, 166, 154)
-                                        flash_text = f"WIN +{int(lvl['rr'])}%"
-                                        total_operations += 1
-                                        if voz_win_voices and viewer_trade_active is None:
-                                            audio_manager.play(f"VOZ_WIN_{random.randint(1, 7)}.mp3")
-                                    # El grupo sigue activo para otros TPs si los hubiera, 
-                                    # pero el usuario pidió seguimiento hasta el máximo configurado.
-                                    # Vamos a considerar el grupo "resuelto" solo si toca SL o el TP máximo.
-                                    if lvl["rr"] == MAX_RR:
-                                        grp["resolved"] = True
-                                        active_trade["cerrada"] = True
+                                # Obtener el RR máximo configurado para este grupo
+                                max_configured_rr = grp.get("max_rr", MAX_RR)
+
+                                # SI TOCA LA META MÁXIMA: Cierre forzoso inmediato
+                                if lvl["rr"] >= max_configured_rr:
+                                    close_position(active_trade, g_dir, grp, lvl, is_viewer=False)
+                                    voice_freeze_start = current_time
+                                    continue # Salir del bucle de niveles para este grupo
+                                else:
+                                    # Audio de TP normal (tp1, tp2...)
+                                    audio_manager.set_force_pause(True)
+                                    audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_tp{int(lvl['rr'])}.mp3", pausar_mercado=True)
+                                    voice_freeze_start = current_time
+                                    # Puntos flotantes en el gráfico
+                                    flash_active = True
+                                    flash_start_time = current_time
+                                    flash_color = GLOBAL_COLOR_BULL
+                                    flash_text = f"+{int(lvl['rr']) * 100} FXP"
 
                     # Limpieza Quirúrgica (Bot): Eliminar bando si terminó su flash
                     if active_trade is not None and "groups" in active_trade:
@@ -2745,6 +2974,10 @@ while app_running:
                     if be_hit:
                         grp["resolved"] = True
                         grp["flash"] = {"color": (255, 200, 50), "start": current_time}
+                        flash_active = True
+                        flash_start_time = current_time
+                        flash_color = (255, 200, 50)
+                        flash_text = "-50 FXP"
                         pending_tts = "BE"
                         continue
                 # Verificar SL del grupo
@@ -2760,13 +2993,17 @@ while app_running:
                     grp["resolved"] = True
                     SL_HIT_AUDIO_FLAG = True
                     audio_manager.set_force_pause(True)
-                    audio_manager.play(f"{g_dir.lower()}_sl.mp3", pausar_mercado=True)
+                    audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_sl.mp3", pausar_mercado=True)
                     voice_freeze_start = current_time
                     grp["flash"] = {"color": (239, 83, 80), "start": current_time}
+                    flash_active = True
+                    flash_start_time = current_time
+                    flash_color = (239, 83, 80)
+                    flash_text = "-100 FXP"
                     total_operations += 1
                     pending_tts = "SL"
                     continue # Permitir procesar otros grupos
-                # Verificar TP de cada nivel R:R
+                # Verificar Meta de cada nivel R:R
                 for lvl in grp["levels"]:
                     if lvl.get("resolved"):
                         continue
@@ -2784,20 +3021,26 @@ while app_running:
                                 streak_display = {"name": uname, "streak": viewer_streaks[uname], "start_time": current_time}
                         lvl["resolved"] = True
                         tp_num = int(lvl["rr"])
-                        audio_manager.set_force_pause(True)
-                        if 1 <= tp_num <= 10:
-                            audio_manager.play(f"{g_dir.lower()}_tp{tp_num}.mp3", pausar_mercado=True)
-                        voice_freeze_start = current_time
-                        total_operations += 1
                         
                         if is_max_tp:
-                            grp["resolved"] = True
+                            # Cierre forzoso inmediato para viewers
+                            close_position(viewer_trade_active, g_dir, grp, lvl, is_viewer=True)
                             pending_tts = "MAX_TP"
-                            grp["flash"] = {"color": (38, 200, 154), "start": current_time}
+                            voice_freeze_start = current_time
                         else:
+                            audio_manager.set_force_pause(True)
+                            if 1 <= tp_num <= 10:
+                                audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_tp{tp_num}.mp3", pausar_mercado=True)
+                            voice_freeze_start = current_time
                             grp["flash"] = {"color": (38, 200, 154), "start": current_time}
+                            flash_active = True
+                            flash_start_time = current_time
+                            flash_color = (38, 200, 154)
+                            flash_text = f"+{int(lvl['rr']) * 100} FXP"
                             if lvl["rr"] >= 1.0:
                                 grp["be_armed"] = True
+                        
+                        total_operations += 1
             # Disparar el TTS Luvvoice del evento final (solo uno por resolución)
             if pending_tts is not None:
                 audio_manager.set_force_pause(True) # Asegurar pausa durante TTS
@@ -2831,6 +3074,8 @@ while app_running:
                         viewer_votes_display = []
         if not audio_manager.juego_pausado and not zone_frozen and liquidity_event_active is None and current_time - last_candle_time >= CANDLE_DURATION:
             candles.append(current_candle.copy())
+            # Resetear cooldown de spam por vela en el chat de TikTok
+            tiktok_chat.reset_candle_cooldown()
             if len(candles) > 1000:
                 candles.pop(0)
                 for bos in bos_markers:
@@ -2971,9 +3216,9 @@ while app_running:
                 ob_height = max(1, ob_y_low - ob_y_high)
                 ob_width = max(1, ob_x_end - ob_x_start)
                 if ob_data["type"] == "ALCISTA":
-                    ob_color = (38, 166, 154, ob_opacity)
+                    ob_color = (*GLOBAL_COLOR_BULL, ob_opacity)
                 else:
-                    ob_color = (239, 83, 80, ob_opacity)
+                    ob_color = (*GLOBAL_COLOR_BEAR, ob_opacity)
                 pygame.draw.rect(ob_surface, ob_color, (ob_x_start, ob_y_high, ob_width, ob_height))
                 if ob_label:
                     label_txt = font_ob.render(ob_label, True, (255, 255, 255))
@@ -2993,9 +3238,9 @@ while app_running:
                         dec_height = max(1, dec_y_low - dec_y_high)
                         dec_width = max(1, dec_x_end - dec_x_start)
                         if active_decisional["type"] == "ALCISTA":
-                            dec_color = (38, 166, 154, 30)
+                            dec_color = (*GLOBAL_COLOR_BULL, 30)
                         else:
-                            dec_color = (239, 83, 80, 30)
+                            dec_color = (*GLOBAL_COLOR_BEAR, 30)
                         pygame.draw.rect(ob_surface, dec_color, (dec_x_start, dec_y_high, dec_width, dec_height))
                         dec_txt = font_ob.render("DECISIONAL", True, (255, 255, 255))
                         dec_rect = dec_txt.get_rect(center=(dec_x_start + dec_width // 2, dec_y_high + dec_height // 2))
@@ -3017,9 +3262,9 @@ while app_running:
                             dec_height = max(1, dec_y_low - dec_y_high)
                             dec_width = max(1, dec_x_end - dec_x_start)
                             if active_decisional["type"] == "ALCISTA":
-                                dec_color = (38, 166, 154, 15)
+                                dec_color = (*GLOBAL_COLOR_BULL, 15)
                             else:
-                                dec_color = (239, 83, 80, 15)
+                                dec_color = (*GLOBAL_COLOR_BEAR, 15)
                             pygame.draw.rect(ob_surface, dec_color, (dec_x_start, dec_y_high, dec_width, dec_height))
             if active_fvg is not None:
                 fvg_vis = active_fvg["index"] - visible_start_global
@@ -3042,7 +3287,7 @@ while app_running:
                 y_high = center_y - int((candle["high"] - view_center_price) * vertical_zoom)
                 y_low = center_y - int((candle["low"] - view_center_price) * vertical_zoom)
                 is_bullish = candle["close"] >= candle["open"]
-                color = (38, 166, 154) if is_bullish else (239, 83, 80)
+                color = GLOBAL_COLOR_BULL if is_bullish else GLOBAL_COLOR_BEAR
                 center_x = x_pos + (candle_width // 2)
                 top_body = min(y_open, y_close)
                 bottom_body = max(y_open, y_close)
@@ -3183,7 +3428,7 @@ while app_running:
                     # BUY y SELL grandes
                     font_vote_big = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
                     buy_txt = font_vote_big.render(f"BUY: {buy_count}", True, (38, 200, 154))
-                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, (239, 83, 80))
+                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
                     screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.65))))
                     screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.65))))
                     # Separador vertical
@@ -3210,9 +3455,8 @@ while app_running:
                     else:
                         pnl_points = v_entry - current_price
                     
-                    pnl_color = (38, 166, 154) if pnl_points >= 0 else (239, 83, 80)
-                    pnl_pct = (pnl_points / v_entry) * 100
-                    pnl_txt = font_timer.render(f"{pnl_pct:+.1f}%", True, pnl_color)
+                    pnl_color = GLOBAL_COLOR_BULL if pnl_points >= 0 else GLOBAL_COLOR_BEAR
+                    pnl_txt = font_timer.render(f"{int(pnl_points):+d} FXP", True, pnl_color)
                     screen.blit(pnl_txt, (info_x, info_y + 25))
                 # Viewers también operan al mismo tiempo - panel centrado arriba
                 if viewer_votes_display:
@@ -3232,7 +3476,7 @@ while app_running:
                     screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.22))))
                     font_vote_big = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
                     buy_txt = font_vote_big.render(f"BUY: {buy_count}", True, (38, 200, 154))
-                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, (239, 83, 80))
+                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
                     screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.65))))
                     screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.65))))
                     pygame.draw.line(screen, (0, 100, 130), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.85)), 1)
@@ -3252,11 +3496,11 @@ while app_running:
                     pygame.draw.rect(screen, (0, 150, 180), (info_x, info_y, vbox_w, vbox_h), 1, border_radius=3)
                     vw_txt = vote_font.render("VIEWERS", True, (0, 200, 220))
                     screen.blit(vw_txt, (info_x + 5, info_y + 3))
-                    buy_txt = vote_font.render(f"BUY: {buy_count}", True, (38, 166, 154))
-                    sell_txt = vote_font.render(f"SELL: {sell_count}", True, (239, 83, 80))
+                    buy_txt = vote_font.render(f"BUY: {buy_count}", True, GLOBAL_COLOR_BULL)
+                    sell_txt = vote_font.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
                     screen.blit(buy_txt, (info_x + 5, info_y + int(SCREEN_H * 0.025)))
                     screen.blit(sell_txt, (info_x + int(SCREEN_W * 0.10), info_y + int(SCREEN_H * 0.025)))
-            # --- DIBUJAR TP/SL EN EL GRAFICO ---
+            # --- DIBUJAR POSICIONES EN EL GRAFICO ---
             # Trade del streamer (EXTREMO) - DUAL RENDERING
             if active_trade is not None and "groups" in active_trade:
                 entry_y = center_y - int((active_trade["entry"] - view_center_price) * vertical_zoom)
@@ -3326,19 +3570,22 @@ while app_running:
                     if rect_width > 0:
                         if tp_height > 0:
                             tp_surface = pygame.Surface((rect_width, tp_height), pygame.SRCALPHA)
-                            tp_surface.fill((38, 166, 154, box_alpha))
+                            tp_surface.fill((*GLOBAL_COLOR_BULL, box_alpha))
                             screen.blit(tp_surface, (box_start_x, tp_top))
                         if sl_height > 0:
                             sl_surface = pygame.Surface((rect_width, sl_height), pygame.SRCALPHA)
-                            sl_surface.fill((239, 83, 80, box_alpha))
+                            sl_surface.fill((*GLOBAL_COLOR_BEAR, box_alpha))
                             screen.blit(sl_surface, (box_start_x, sl_top))
                             
                     # Línea de SL
                     sl_line_alpha = 100 if grp.get("resolved") else 255
                     for x in range(box_start_x, box_end_x, 10):
-                        pygame.draw.line(screen, (239, 83, 80, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
+                        pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
+                    # Etiqueta de SL (Puntuación flotante fija)
+                    sl_label = font_trade.render("-100 FXP", True, (255, 100, 100))
+                    screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
                         
-                    # Niveles de TP (dibujamos 1, 2, 3 y MAX_RR)
+                    # Niveles de Meta (dibujamos 1, 2, 3 y MAX_RR)
                     for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
                         rr_val = int(lvl['rr'])
                         if rr_val in [1, 2, 3, MAX_RR]:
@@ -3347,8 +3594,8 @@ while app_running:
                             for x in range(box_start_x, box_end_x, 8):
                                 pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
                             
-                            label_col = (100, 100, 100) if lvl.get("resolved") else (38, 166, 154)
-                            lvl_label = font_trade.render(f"TP{rr_val}", True, label_col)
+                            label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
+                            lvl_label = font_trade.render(f"Meta {rr_val} (+{rr_val*100} FXP)", True, label_col)
                             screen.blit(lvl_label, (box_start_x, lvl_y - 14))
 
                     # Línea de entrada
@@ -3362,10 +3609,10 @@ while app_running:
                         if elapsed_flash < 1000:
                             # Efecto de pulso y fade
                             glow_alpha = int(180 * (1.0 - elapsed_flash / 1000.0))
-                            if f["color"] == (239, 83, 80): # SL (Rojo)
+                            if f["color"] == GLOBAL_COLOR_BEAR: # SL
                                 flash_y = entry_y if g_dir == "BUY" else grp_sl_y
                                 flash_h = max(1, abs(grp_sl_y - entry_y))
-                            else: # TP (Verde)
+                            else: # TP
                                 flash_y = box_visual_top
                                 flash_h = max(1, box_height)
                             
@@ -3418,7 +3665,7 @@ while app_running:
                         box_start_x = line_start_x - (idx + 2) * v_box_w - (idx + 1) * 5 - 3
                         box_end_x = box_start_x + v_box_w
                     else:
-                        group_label_color = (239, 83, 80)
+                        group_label_color = GLOBAL_COLOR_BEAR
                         glow_color = (255, 90, 40)
                         # Offset basado en el índice del RR entre las ventas (Apilamiento compacto a la derecha)
                         idx = sell_ids.index(g_id)
@@ -3451,26 +3698,29 @@ while app_running:
                     if rect_width > 0:
                         if tp_height > 0:
                             tp_surface = pygame.Surface((rect_width, tp_height), pygame.SRCALPHA)
-                            tp_surface.fill((38, 166, 154, box_alpha))
+                            tp_surface.fill((*GLOBAL_COLOR_BULL, box_alpha))
                             screen.blit(tp_surface, (box_start_x, tp_top))
                         if sl_height > 0:
-                            sl_surface = pygame.Surface((rect_width, sl_height), pygame.SRCALPHA)
-                            sl_surface.fill((239, 83, 80, box_alpha))
+                            sl_surface = pygame.Surface((vbox_w, sl_height), pygame.SRCALPHA)
+                            sl_surface.fill((*GLOBAL_COLOR_BEAR, box_alpha))
                             screen.blit(sl_surface, (box_start_x, sl_top))
                     # Línea punteada de SL
                     sl_line_alpha = 100 if grp.get("resolved") else 255
                     for x in range(box_start_x, box_end_x, 10):
-                        pygame.draw.line(screen, (239, 83, 80, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
-                    # Líneas punteadas sutiles para cada nivel R:R (TP)
+                        pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
+                    # Etiqueta de SL (Puntuación flotante fija)
+                    sl_label = font_trade.render("-100 FXP", True, (255, 100, 100))
+                    screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
+                    # Líneas punteadas sutiles para cada nivel R:R (Meta)
                     for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
                         tp_line_alpha = 60 if grp.get("resolved") or lvl.get("resolved") else 120
                         dotted = (200, 200, 200, tp_line_alpha)
                         for x in range(box_start_x, box_end_x, 8):
                             pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
-                        # Etiqueta TPX - tachado o gris si ya se resolvió
+                        # Etiqueta MetaX - tachado o gris si ya se resolvió
                         rr_val = int(lvl['rr'])
-                        label_col = (100, 100, 100) if lvl.get("resolved") else (38, 166, 154)
-                        lvl_label = font_trade.render(f"TP{rr_val}", True, label_col)
+                        label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
+                        lvl_label = font_trade.render(f"Meta {rr_val} (+{rr_val*100} FXP)", True, label_col)
                         screen.blit(lvl_label, (box_start_x, lvl_y - 14))
                     # Línea de entrada
                     for x in range(box_start_x, box_end_x, 12):
@@ -3483,10 +3733,10 @@ while app_running:
                             # Efecto de pulso y fade
                             glow_alpha = int(180 * (1.0 - elapsed_flash / 1000.0))
                             
-                            if f["color"] == (239, 83, 80): # SL (Rojo)
+                            if f["color"] == GLOBAL_COLOR_BEAR: # SL
                                 flash_y = entry_y if g_dir == "BUY" else grp_sl_y
                                 flash_h = max(1, abs(grp_sl_y - entry_y))
-                            else: # TP (Verde/Amarillo)
+                            else: # TP
                                 flash_y = box_visual_top
                                 flash_h = max(1, box_height)
 
@@ -3680,6 +3930,165 @@ while app_running:
                 timer_txt = font_liq_sub.render(f"{remaining_s:.1f}s", True, (200, 200, 210))
                 screen.blit(timer_txt, timer_txt.get_rect(center=(SCREEN_W // 2, int(SCREEN_H * 0.68))))
 
+        # --- GUÍA VISUAL DE COMANDOS (Margen Derecho - HUD SUPREMO) ---
+        if game_started and liquidity_event_active is None:
+            if guide_animation_start == 0:
+                guide_animation_start = pygame.time.get_ticks()
+            
+            curr_ticks = pygame.time.get_ticks()
+            elapsed = curr_ticks - guide_animation_start
+            anim_progress = min(1.0, elapsed / 1000.0) 
+            
+            guide_w = int(SCREEN_W * 0.14)  # Panel más angosto y compacto
+            guide_h = int(SCREEN_H * 0.58)
+            guide_x = int(SCREEN_W * 0.84)  # Movido un poco más a la derecha para compensar ancho
+            guide_y = int(SCREEN_H * 0.12)
+            
+            # 1. PANEL HUD CIBERNÉTICO (Fondo con Matriz de Puntos y Rejilla)
+            panel_surf = pygame.Surface((guide_w, guide_h), pygame.SRCALPHA)
+            # Fondo ultra-profundo translúcido
+            pygame.draw.rect(panel_surf, (5, 8, 15, 220), (0, 0, guide_w, guide_h), border_radius=10)
+            
+            # Matriz de Puntos (Cyber Grid)
+            dot_color = (0, 200, 255, 30)
+            for dx in range(0, guide_w, 15):
+                for dy in range(0, guide_h, 15):
+                    pygame.draw.circle(panel_surf, dot_color, (dx, dy), 1)
+            
+            # Rejilla de Coordenadas (Más sutil)
+            grid_color = (0, 220, 255, 10)
+            for i in range(0, guide_w, 40):
+                pygame.draw.line(panel_surf, grid_color, (i, 0), (i, guide_h), 1)
+            for i in range(0, guide_h, 40):
+                pygame.draw.line(panel_surf, grid_color, (0, i), (guide_w, i), 1)
+
+            # 2. ESQUINAS TÉCNICAS (Corner Brackets)
+            bracket_color = (0, 255, 255)
+            b_len = 15
+            b_thick = 2
+            # Top-Left
+            pygame.draw.lines(panel_surf, bracket_color, False, [(0, b_len), (0, 0), (b_len, 0)], b_thick)
+            # Top-Right
+            pygame.draw.lines(panel_surf, bracket_color, False, [(guide_w-b_len, 0), (guide_w, 0), (guide_w, b_len)], b_thick)
+            # Bottom-Left
+            pygame.draw.lines(panel_surf, bracket_color, False, [(0, guide_h-b_len), (0, guide_h), (b_len, guide_h)], b_thick)
+            # Bottom-Right
+            pygame.draw.lines(panel_surf, bracket_color, False, [(guide_w-b_len, guide_h), (guide_w, guide_h), (guide_w, guide_h-b_len)], b_thick)
+            
+            # Brillo de Borde Neón (Refinado)
+            for i in range(3):
+                glow_a = 150 // (i + 1)
+                pygame.draw.rect(panel_surf, (0, 220, 255, glow_a), (-i, -i, guide_w + i*2, guide_h + i*2), 1, border_radius=10 + i)
+            
+            panel_surf.set_alpha(int(255 * anim_progress))
+            screen.blit(panel_surf, (guide_x - 10, guide_y - 10))
+            
+            # 3. TÍTULO TERMINAL HACKING
+            font_guide_title = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.030), bold=True)
+            font_guide_subtitle = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016))
+            font_deco = pygame.font.SysFont("Consolas", 9)
+            
+            if anim_progress > 0.2:
+                # Efecto Parpadeo Cursor Terminal
+                title_text = "PARA JUGAR"
+                cursor = "_" if (curr_ticks // 600) % 2 == 0 else " "
+                
+                # Resplandor de Título
+                for off in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    glow_t = font_guide_title.render(title_text + cursor, True, (0, 100, 150))
+                    screen.blit(glow_t, (guide_x, guide_y + off[1]))
+                
+                guide_title_txt = font_guide_title.render(title_text + cursor, True, (255, 255, 255))
+                screen.blit(guide_title_txt, (guide_x, guide_y))
+                
+                # Subtítulo con prefijo de sistema y efecto resplandor
+                status_text = "> CMD_LINK: ACTIVE"
+                for off in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    glow_s = font_guide_subtitle.render(status_text, True, (0, 150, 100))
+                    screen.blit(glow_s, (guide_x + off[0], guide_y + int(SCREEN_H * 0.040) + off[1]))
+                
+                guide_subtitle_txt = font_guide_subtitle.render(status_text, True, (0, 255, 150))
+                screen.blit(guide_subtitle_txt, (guide_x, guide_y + int(SCREEN_H * 0.040)))
+                
+                # Decoración Hexadecimal diminuta
+                hex_deco = font_deco.render("ID:" + hex(curr_ticks % 0xFFFF)[2:].upper() + " L_VER:3.8", True, (0, 150, 180))
+                screen.blit(hex_deco, (guide_x, guide_y - 20))
+
+            # 4. TARJETAS DE DATOS (Cyber Cards)
+            if anim_progress > 0.4:
+                commands = [
+                    ("SUBE 1", "Meta 1 (+100 FXP)", (0, 255, 200)),
+                    ("SUBE 2", "Meta 2 (+200 FXP)", (0, 255, 200)),
+                    ("SUBE 3", "Meta 3 (+300 FXP)", (0, 255, 200)),
+                    ("BAJA 1", "Meta 1 (+100 FXP)", (255, 50, 80)),
+                    ("BAJA 2", "Meta 2 (+200 FXP)", (255, 50, 80)),
+                    ("BAJA 3", "Meta 3 (+300 FXP)", (255, 50, 80)),
+                ]
+                
+                font_cmd = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.024), bold=True)
+                font_target = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.015))
+                
+                item_y = guide_y + int(SCREEN_H * 0.09)
+                card_w = guide_w - 15
+                card_h = int(SCREEN_H * 0.065)
+                card_spacing = int(SCREEN_H * 0.080) # Incrementado ligeramente para mejor respiro
+                
+                for i, (cmd, target, color) in enumerate(commands):
+                    if anim_progress < 0.4 + (i * 0.07): continue
+                    
+                    # Mini-Tarjeta translúcida con bordes técnicos
+                    card_rect = pygame.Rect(guide_x - 5, item_y - 5, card_w, card_h)
+                    pygame.draw.rect(screen, (15, 25, 45, 120), card_rect, border_radius=4)
+                    pygame.draw.rect(screen, (*color, 40), card_rect, 1, border_radius=4)
+                    
+                    # Marcas de Telemetría diminutas en esquinas de tarjeta
+                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x+5, card_rect.y), 1)
+                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x, card_rect.y+5), 1)
+                    
+                    # Icono Hexagonal Brillante
+                    hx_points = []
+                    for angle in range(0, 360, 60):
+                        rad = math.radians(angle)
+                        hx_points.append((guide_x + 6 + 5 * math.cos(rad), item_y + 10 + 5 * math.sin(rad)))
+                    pygame.draw.polygon(screen, color, hx_points, 0)
+                    pygame.draw.polygon(screen, (255, 255, 255), hx_points, 1)
+                    
+                    # Texto Comando con sutil Glow
+                    for off in [(-1,0), (1,0)]:
+                        glow_c = font_cmd.render(cmd, True, (*color, 50))
+                        screen.blit(glow_c, (guide_x + 20 + off[0], item_y))
+                    
+                    cmd_txt = font_cmd.render(cmd, True, color)
+                    screen.blit(cmd_txt, (guide_x + 20, item_y))
+                    
+                    # Meta y FXP en bloque de datos
+                    target_parts = target.split("(+")
+                    base_txt = font_target.render(target_parts[0], True, (130, 160, 180))
+                    screen.blit(base_txt, (guide_x + 20, item_y + 24))
+                    
+                    if len(target_parts) > 1:
+                        fxp_val = "+" + target_parts[1].replace(")", "")
+                        fxp_surf = font_target.render(fxp_val, True, (0, 255, 255))
+                        fxp_bg = pygame.Rect(guide_x + 20 + base_txt.get_width() + 4, item_y + 23, fxp_surf.get_width() + 4, 15)
+                        pygame.draw.rect(screen, (0, 80, 100, 100), fxp_bg)
+                        screen.blit(fxp_surf, (fxp_bg.x + 2, fxp_bg.y))
+
+                    # Código de telemetría diminuto (falso)
+                    tel_txt = font_deco.render(f"TK-{i}0{i}", True, (*color, 80))
+                    screen.blit(tel_txt, (card_rect.right - 35, card_rect.y + 5))
+
+                    item_y += card_spacing
+            
+            # 5. SCANLINE Y EFECTO VISUAL CINEMATOGRÁFICO
+            # Línea de escaneo más lenta y sutil
+            scan_time = (curr_ticks % 6000) / 6000.0  # Mucho más lento (6 segundos por ciclo)
+            scan_y = guide_y + (guide_h * scan_time)
+            pygame.draw.line(screen, (0, 255, 255, 20), (guide_x - 10, scan_y), (guide_x + guide_w - 10, scan_y), 1)
+            
+            # Línea de animación de entrada (solo al inicio)
+            if anim_progress < 1.0:
+                entry_y = guide_y + (guide_h * anim_progress)
+                pygame.draw.line(screen, (255, 255, 255, 120), (guide_x - 10, entry_y), (guide_x + guide_w - 10, entry_y), 2)
 
         pygame.display.flip()
 
