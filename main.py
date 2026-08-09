@@ -3988,6 +3988,39 @@ while app_running:
             font_guide_subtitle = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016))
             font_deco = pygame.font.SysFont("Consolas", 9)
             
+            # 0. TELEMETRÍA DE RONDAS Y VELA (Minimapa de tiempo)
+            if anim_progress > 0.1:
+                round_num = len(candles) - initial_candle_count + 1
+                font_tel = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.015), bold=True)
+                
+                # Texto de Ronda
+                ronda_txt = font_tel.render(f"RONDA: #{round_num:02d}", True, (0, 255, 255))
+                screen.blit(ronda_txt, (guide_x, guide_y - 55))
+                
+                # Barra de tiempo de vela (Minimapa)
+                candle_elapsed = curr_ticks - last_candle_time
+                candle_pct = min(1.0, candle_elapsed / CANDLE_DURATION)
+                
+                bar_w = guide_w - 20
+                bar_h = 4
+                pygame.draw.rect(screen, (20, 30, 50), (guide_x, guide_y - 40, bar_w, bar_h), border_radius=2)
+                pygame.draw.rect(screen, (0, 220, 255), (guide_x, guide_y - 40, int(bar_w * candle_pct), bar_h), border_radius=2)
+                
+                # Tiempo restante
+                rem_ms = max(0, CANDLE_DURATION - candle_elapsed)
+                rem_txt = font_tel.render(f"NEXT: {rem_ms/1000:.1f}s", True, (150, 180, 200))
+                screen.blit(rem_txt, (guide_x, guide_y - 35))
+
+                # --- INDICADOR CIRCULAR DE CICLO (NUEVO) ---
+                circle_x = guide_x + rem_txt.get_width() + 12
+                circle_y = guide_y - 28
+                radius = 5
+                pygame.draw.circle(screen, (30, 45, 60), (circle_x, circle_y), radius, 1)
+                # Arco de progreso (0 a 360 grados)
+                angle = 360 * candle_pct
+                rect_arc = pygame.Rect(circle_x - radius, circle_y - radius, radius * 2, radius * 2)
+                pygame.draw.arc(screen, (0, 255, 255), rect_arc, math.radians(-90), math.radians(-90 + angle), 2)
+
             if anim_progress > 0.2:
                 # Efecto Parpadeo Cursor Terminal
                 title_text = "PARA JUGAR"
@@ -4078,6 +4111,61 @@ while app_running:
                     screen.blit(tel_txt, (card_rect.right - 35, card_rect.y + 5))
 
                     item_y += card_spacing
+                
+                # 6. INDICADOR DE COOLDOWN / ESTADO DE PARTICIPACIÓN
+                if anim_progress > 0.8:
+                    status_y = guide_y + guide_h - 25
+                    
+                    # --- TELEMETRÍA DE VOLATILIDAD DINÁMICA (NUEVO) ---
+                    if len(candles) > 5:
+                        avg_vol = sum(c["high"] - c["low"] for c in candles[-5:]) / 5
+                    else:
+                        avg_vol = 8.0
+                    
+                    curr_vol = current_candle["high"] - current_candle["low"]
+                    
+                    if curr_vol > avg_vol * 1.6:
+                        vol_label, vol_color = "RIESGO: ACTIVO", (255, 80, 80)
+                    elif curr_vol > avg_vol * 0.9:
+                        vol_label, vol_color = "VOLATILIDAD: ALTA", (255, 180, 50)
+                    else:
+                        vol_label, vol_color = "MERCADO: ESTABLE", (0, 255, 150)
+                    
+                    font_vol = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.013), bold=True)
+                    vol_surf = font_vol.render(vol_label, True, vol_color)
+                    # Punto de estado parpadeante sutil
+                    if (curr_ticks // 500) % 2 == 0:
+                        pygame.draw.circle(screen, vol_color, (guide_x + 5, status_y - 12), 3)
+                    screen.blit(vol_surf, (guide_x + 15, status_y - 18))
+
+                    # Lógica de estado
+                    if zone_frozen:
+                        status_msg = "VOTACIÓN ABIERTA"
+                        status_color = (0, 255, 150)
+                    elif active_trade or viewer_trade_active:
+                        status_msg = "OPERACIÓN EN CURSO"
+                        status_color = (255, 150, 0)
+                    elif curr_ticks - bot_last_trade_time < BOT_COOLDOWN and bot_last_trade_time > 0:
+                        status_msg = "SISTEMA EN COOLDOWN"
+                        status_color = (255, 50, 50)
+                    else:
+                        status_msg = "SISTEMA: LISTO"
+                        status_color = (0, 255, 255)
+                    
+                    # Renderizar barra de estado
+                    font_status = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.018), bold=True)
+                    # Fondo sutil para el estado
+                    status_bg = pygame.Rect(guide_x - 5, status_y - 5, guide_w - 5, 25)
+                    pygame.draw.rect(screen, (5, 15, 30, 180), status_bg, border_radius=4)
+                    
+                    # Texto de estado parpadeante si es crítico
+                    show_status = True
+                    if status_msg in ["VOTACIÓN ABIERTA", "SISTEMA EN COOLDOWN"]:
+                        show_status = (curr_ticks // 400) % 2 == 0
+                    
+                    if show_status:
+                        status_txt = font_status.render(status_msg, True, status_color)
+                        screen.blit(status_txt, status_txt.get_rect(center=(guide_x + (guide_w-15)//2, status_y + 7)))
             
             # 5. SCANLINE Y EFECTO VISUAL CINEMATOGRÁFICO
             # Línea de escaneo más lenta y sutil
