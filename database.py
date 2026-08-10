@@ -545,3 +545,170 @@ def get_analytics_data(filter_type='hoy', custom_dates=None):
         "evolution": evolution,
         "best_hours": best_hours
     }
+
+
+def get_sessions_history(limit=50):
+    """Obtiene el historial de sesiones registradas"""
+    conn = get_connection()
+    c = conn.cursor()
+    query = """
+        SELECT 
+            id,
+            start_time,
+            end_time,
+            total_rounds as rounds,
+            peak_viewers as max_viewers,
+            (CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_viewers,
+            unique_participants_count as participants,
+            fxp_distributed as fxp,
+            (strftime('%s', end_time) - strftime('%s', start_time)) as duration_secs
+        FROM sessions
+        WHERE end_time IS NOT NULL
+        ORDER BY start_time DESC
+        LIMIT ?
+    """
+    c.execute(query, (limit,))
+    sessions = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return sessions
+
+
+def get_session_details(session_id):
+    """Obtiene el resumen completo de una sesión específica"""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Resumen base
+    c.execute("""
+        SELECT *, 
+               (strftime('%s', end_time) - strftime('%s', start_time)) as duration_secs
+        FROM sessions WHERE id = ?
+    """, (session_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return None
+    summary = dict(row)
+    
+    # Votos
+    c.execute("SELECT vote_type, count FROM session_votes WHERE session_id = ?", (session_id,))
+    votes = {r['vote_type']: r['count'] for r in c.fetchall()}
+    
+    # RR Stats
+    c.execute("SELECT rr_ratio, win_count, loss_count FROM session_rr_stats WHERE session_id = ?", (session_id,))
+    rr_stats = [dict(r) for r in c.fetchall()]
+    
+    # Eventos
+    c.execute("SELECT event_name, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
+    events = [dict(r) for r in c.fetchall()]
+    
+    conn.close()
+    return {
+        "summary": summary,
+        "votes": votes,
+        "rr_stats": rr_stats,
+        "events": events
+    }
+
+
+def get_best_time_analysis():
+    """Realiza un análisis profundo para recomendar el mejor horario de live"""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Agrupar por día de la semana y hora
+    # 0=Sunday, 1=Monday, ..., 6=Saturday en strftime('%w', ...)
+    query = """
+        SELECT 
+            strftime('%w', start_time) as dow,
+            strftime('%H', start_time) as hour,
+            AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_v,
+            MAX(peak_viewers) as peak_v,
+            SUM(unique_participants_count) as total_p,
+            SUM(total_messages) as total_m,
+            COUNT(*) as session_count
+        FROM sessions
+        WHERE end_time IS NOT NULL
+        GROUP BY dow, hour
+        HAVING session_count > 0
+        ORDER BY avg_v DESC
+    """
+    c.execute(query)
+    results = c.fetchall()
+    
+    if not results:
+        conn.close()
+        return "No hay suficiente información histórica para recomendar un horario."
+    
+    best = results[0]
+    days = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+    day_name = days[int(best['dow'])]
+    
+    # Formatear recomendación
+    recommendation = f"Mejor horario detectado: {day_name} {best['hour']}:00 - {int(best['hour'])+1:02d}:00"
+    
+    conn.close()
+    return {
+        "recommendation": recommendation,
+        "best_day": day_name,
+        "best_hour": f"{best['hour']}:00",
+        "avg_viewers": best['avg_v'],
+        "peak_viewers": best['peak_v'],
+        "all_data": [dict(r) for r in results]
+    }
+
+
+def get_comparison_data(filter1='hoy', custom1=None, filter2='ayer', custom2=None):
+    """Compara métricas entre dos períodos"""
+    data1 = get_analytics_data(filter1, custom1)
+    data2 = get_analytics_data(filter2, custom2)
+    
+    s1 = data1['summary']
+    s2 = data2['summary']
+    
+    metrics_to_compare = [
+        ('max_peak', 'Viewers Máximos'),
+        ('global_avg_viewers', 'Viewers Promedio'),
+        ('participants', 'Participantes'),
+        ('messages', 'Mensajes'),
+        ('likes', 'Likes'),
+        ('rounds', 'Rondas'),
+        ('fxp', 'FXP Repartido')
+    ]
+    
+    comparison = []
+    for key, label in metrics_to_compare:
+        val1 = s1.get(key, 0) or 0
+        val2 = s2.get(key, 0) or 0
+        diff = val1 - val2
+        pct = (diff / val2 * 100) if val2 > 0 else (100 if val1 > 0 else 0)
+        comparison.append({
+            'label': label,
+            'val1': val1,
+            'val2': val2,
+            'diff': diff,
+            'pct': pct
+        })
+        
+    # Comparar Votos
+    v1 = data1['votes']
+    v2 = data2['votes']
+    sube1, baja1 = v1.get('SUBE', 0), v1.get('BAJA', 0)
+    sube2, baja2 = v2.get('SUBE', 0), v2.get('BAJA', 0)
+    
+    comparison.append({
+        'label': 'Votos SUBE',
+        'val1': sube1,
+        'val2': sube2,
+        'diff': sube1 - sube2,
+        'pct': ((sube1 - sube2) / sube2 * 100) if sube2 > 0 else (100 if sube1 > 0 else 0)
+    })
+    comparison.append({
+        'label': 'Votos BAJA',
+        'val1': baja1,
+        'val2': baja2,
+        'diff': baja1 - baja2,
+        'pct': ((baja1 - baja2) / baja2 * 100) if baja2 > 0 else (100 if baja1 > 0 else 0)
+    })
+    
+    return comparison
