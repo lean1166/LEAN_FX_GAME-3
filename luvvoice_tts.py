@@ -92,18 +92,18 @@ def _play_tts_audio(text: str, filename: str, pausar_mercado: bool = False):
 
 
 def play_on_max_tp():
-    """Evento ON_MAX_TP: Solo al alcanzar el TP Máximo."""
+    """Evento ON_MAX_TP: Solo al alcanzar la Meta Máxima."""
     _play_tts_audio(
-        "¡Felicidades a los ganadores! Se alcanzó el Take Profit máximo de la ronda. Excelente lectura de mercado.",
+        "¡Felicidades a los ganadores! Se alcanzó la meta máxima de la ronda. Excelente lectura de mercado.",
         "on_max_tp.mp3",
         pausar_mercado=True,
     )
 
 
 def play_on_stop_loss():
-    """Evento ON_STOP_LOSS: Al tocar el SL de la zona."""
+    """Evento ON_STOP_LOSS: Al tocar el límite de pérdida de la zona."""
     _play_tts_audio(
-        "Operación cerrada en Stop Loss. El mercado barrió la zona, a gestionar el riesgo para la siguiente.",
+        "Operación cerrada en límite de pérdida. El mercado barrió la zona, a gestionar el riesgo para la siguiente.",
         "on_stop_loss.mp3",
         pausar_mercado=True,
     )

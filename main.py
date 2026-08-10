@@ -209,6 +209,17 @@ STREAK_DISPLAY_DURATION = 4000  # 4 segundos visible
 SL_HIT_AUDIO_FLAG = False  # Flag para activar audios en el futuro
 STREAK_MIN = 2  # Mínimo de wins seguidos para mostrar (2 para testing, 3 para producción)
 
+# --- TICKER DE EVENTOS (CONSOLA) ---
+ticker_events = []
+def add_ticker_event(msg):
+    global ticker_events
+    timestamp = pygame.time.get_ticks()
+    # Limpiar formato de mensajes
+    clean_msg = msg.strip().upper()
+    ticker_events.append({"msg": clean_msg, "time": timestamp})
+    if len(ticker_events) > 8: # Mantener solo los últimos 8
+        ticker_events.pop(0)
+
 def play_sound(sound):
     if sound is not None and game_started:
         audio_manager.play(sound, pausar_mercado=False)
@@ -222,6 +233,7 @@ def trade_win(amount, rr_ratio=0):
     wins += 1
     update_player_balance("LEAN FX", fxp_balance, win=True)
     add_trade_history("LEAN FX", "BUY", "WIN", amount, rr_ratio)
+    add_ticker_event(f"STREAMER WIN: +{int(amount)} FXP (RR {rr_ratio})")
 
 def trade_loss(amount, rr_ratio=1.0):
     """Llamar cuando se pierde un trade. Resta del balance"""
@@ -229,6 +241,7 @@ def trade_loss(amount, rr_ratio=1.0):
     fxp_balance -= amount
     update_player_balance("LEAN FX", fxp_balance, loss=True)
     add_trade_history("LEAN FX", "SELL", "LOSS", -amount, rr_ratio)
+    add_ticker_event(f"STREAMER LOSS: -{int(amount)} FXP")
 
 def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
     """Cierra una posición de forma forzosa al tocar la Meta Máxima."""
@@ -243,13 +256,7 @@ def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
     grp["resolved"] = True
     trade_data["cerrada"] = True
     
-    # 2. Forzar Agotamiento de Mercado (Cambio de Ciclo / BOS)
-    market_exhaustion_active = True
-    market_exhaustion_start = current_time
-    # Si fue BUY (subiendo), el mercado DEBE bajar (-1). Si fue SELL, DEBE subir (1).
-    market_exhaustion_dir = -1 if g_dir == "BUY" else 1
-    
-    # 3. Feedback Visual y Audio
+    # 2. Feedback Visual y Audio
     grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
     
     # Audio de Meta Máxima
@@ -271,8 +278,6 @@ def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
             luvvoice_tts.play_on_max_tp()
 
     # 4. Limpieza Inmediata (opcional, pero marcamos para borrado en el siguiente frame)
-    if not is_viewer:
-        bot_bias_active = False
     
     print(f"[SISTEMA] META MÁXIMA ALCANZADA (RR {lvl['rr']}). Posición cerrada y PnL congelado.")
 
@@ -342,40 +347,63 @@ losses = streamer_data["losses"]
 STREAMER_NAME = "LEAN FX"
 candles = []
 price = 1000
+# --- SISTEMA DE IMPULSO Y RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
 trend_dir = random.choice([-1, 1])
-# Generador de mercado realista: impulsos + retrocesos variados
-is_impulse = True  # Empieza con impulso
-trend_length = random.randint(6, 10)
+market_state = "impulse"
+wave_count = 1  # Mantenido por compatibilidad
+trend_length = random.randint(4, 6)
 trend_count = 0
-trend_strength = random.uniform(4, 10)  # Fuerza del movimiento
+trend_strength = random.uniform(10, 18)
+current_dir = trend_dir
+impulse_in_trend = 0
+
 for _ in range(180):
     trend_count += 1
+    
     if trend_count >= trend_length:
-        trend_dir *= -1
         trend_count = 0
-        is_impulse = not is_impulse
-        if is_impulse:
-            # Impulso: 6-10 velas
-            trend_length = random.randint(6, 10)
-            trend_strength = random.uniform(4, 12)
+        if market_state == "impulse":
+            market_state = "retracement"
+            trend_length = random.randint(2, 3)
+            trend_strength = random.uniform(5, 9)
+            current_dir = -trend_dir
+            impulse_in_trend += 1
         else:
-            # Retroceso: variado
-            if random.random() < 0.4:
-                trend_length = random.randint(3, 6)
-                trend_strength = random.uniform(6, 11)
-            else:
-                trend_length = random.randint(5, 9)
-                trend_strength = random.uniform(2, 6)
-    # Generar vela
-    if random.random() < 0.80:
-        body = random.uniform(trend_strength * 0.3, trend_strength) * trend_dir
+            market_state = "impulse"
+            trend_length = random.randint(4, 6)
+            trend_strength = random.uniform(10, 18)
+            
+            # Cambio de tendencia tras 1-2 impulsos (Ciclos Ágiles)
+            if impulse_in_trend >= random.randint(1, 2):
+                trend_dir *= -1
+                impulse_in_trend = 0
+            current_dir = trend_dir
     else:
-        # Vela contra-tendencia (ruido)
-        body = random.uniform(1, trend_strength * 0.5) * -trend_dir
+        # Mantener la dirección de la sub-onda actual
+        if market_state == "impulse":
+            current_dir = trend_dir
+        else: # retracement
+            current_dir = -trend_dir
+
+    # Sesgo del tick basado en el estado actual
+    bias_prob = 0.82 if market_state == "impulse" else 0.65
+    
+    if random.random() < bias_prob:
+        body = random.uniform(trend_strength * 0.4, trend_strength * 1.1) * current_dir
+    else:
+        body = random.uniform(0.1, trend_strength * 0.5) * -current_dir
+        
     open_p = price
     close_p = open_p + body
-    high_p = max(open_p, close_p) + random.uniform(0.5, 3)
-    low_p = min(open_p, close_p) - random.uniform(0.5, 3)
+    
+    # --- MECHAS REALISTAS ---
+    wick_base = trend_strength * 0.2
+    wick_up = random.uniform(0.1, wick_base) if body > 0 else random.uniform(0.2, wick_base * 1.5)
+    wick_down = random.uniform(0.2, wick_base * 1.5) if body > 0 else random.uniform(0.1, wick_base)
+        
+    high_p = max(open_p, close_p) + wick_up
+    low_p = min(open_p, close_p) - wick_down
+    
     candles.append({"open": open_p, "close": close_p, "high": high_p, "low": low_p})
     price = close_p
 current_candle = {"open": candles[-1]["close"], "close": candles[-1]["close"], "high": candles[-1]["close"], "low": candles[-1]["close"]}
@@ -390,6 +418,7 @@ MARKET_EXHAUSTION_DURATION = 8000  # 8 segundos de retroceso forzado
 TRADE_RISK = 100  # Siempre pierdes 100 FXP, sin importar el tamaño del Riesgo
 TP_MULTIPLIER = 3.0  # Meta:Riesgo 3:1
 SL_BUFFER = 1.0  # Riesgo 1 pip debajo/encima de la zona
+ZONE_PADDING = 3.5  # Margen extra para que las zonas sean más grandes y realistas
 TIMER_DURATION = 10000  # 10 segundos en ms (temporal para pruebas)
 trade_history = []
 font_btn = pygame.font.SysFont("Arial", 20, bold=True)
@@ -606,7 +635,7 @@ def find_decisional(candles_list, bos_index, bos_type, extreme_index):
             prev_c = candles_list[i - 1]
             if (c["close"] < c["open"] and prev_c["close"] < prev_c["open"]
                     and c["close"] < prev_c["close"]):
-                return {"high": c["high"], "low": c["low"], "index": i}
+                return {"high": c["high"] + ZONE_PADDING, "low": c["low"] - ZONE_PADDING, "index": i}
     elif bos_type == "BAJISTA":
         # Retroceso alcista: 2 velas verdes donde la 2da cierra mas alto
         # El decisional es la 2da vela (la que hizo el high mas alto)
@@ -615,7 +644,7 @@ def find_decisional(candles_list, bos_index, bos_type, extreme_index):
             prev_c = candles_list[i - 1]
             if (c["close"] > c["open"] and prev_c["close"] > prev_c["open"]
                     and c["close"] > prev_c["close"]):
-                return {"high": c["high"], "low": c["low"], "index": i}
+                return {"high": c["high"] + ZONE_PADDING, "low": c["low"] - ZONE_PADDING, "index": i}
     return None
 
 def zonas_se_solapan(zona_a, zona_b):
@@ -632,10 +661,10 @@ def find_fvg(candles_list, start_idx, end_idx, bos_type):
         v3 = candles_list[i + 2]
         if bos_type == "ALCISTA":
             if v3["low"] > v1["high"]:
-                return {"high": v3["low"], "low": v1["high"], "index": i + 1}
+                return {"high": v3["low"] + ZONE_PADDING, "low": v1["high"] - ZONE_PADDING, "index": i + 1}
         else:
             if v1["low"] > v3["high"]:
-                return {"high": v1["low"], "low": v3["high"], "index": i + 1}
+                return {"high": v1["low"] + ZONE_PADDING, "low": v3["high"] - ZONE_PADDING, "index": i + 1}
     return None
 
 def process_new_candle(candles_list, new_index):
@@ -673,7 +702,7 @@ def process_new_candle(candles_list, new_index):
             prev_ob = active_ob
             if prev_ob is not None:
                 prev_ob["end_index"] = new_index
-            active_ob = {"type": "BAJISTA", "high": ob_candle["high"], "low": ob_candle["low"], "index": range_high_index}
+            active_ob = {"type": "BAJISTA", "high": ob_candle["high"] + ZONE_PADDING, "low": ob_candle["low"] - ZONE_PADDING, "index": range_high_index}
         dec = find_decisional(candles_list, new_index, "BAJISTA", range_high_index)
         if dec is not None:
             dec["type"] = "BAJISTA"
@@ -712,7 +741,7 @@ def process_new_candle(candles_list, new_index):
             prev_ob = active_ob
             if prev_ob is not None:
                 prev_ob["end_index"] = new_index
-            active_ob = {"type": "ALCISTA", "high": ob_candle["high"], "low": ob_candle["low"], "index": range_low_index}
+            active_ob = {"type": "ALCISTA", "high": ob_candle["high"] + ZONE_PADDING, "low": ob_candle["low"] - ZONE_PADDING, "index": range_low_index}
         dec = find_decisional(candles_list, new_index, "ALCISTA", range_low_index)
         if dec is not None:
             dec["type"] = "ALCISTA"
@@ -809,7 +838,7 @@ def process_new_candle(candles_list, new_index):
                 prev_ob = active_ob
                 if prev_ob is not None:
                     prev_ob["end_index"] = new_index
-                active_ob = {"type": "ALCISTA", "high": ob_candle["high"], "low": ob_candle["low"], "index": range_low_index}
+                active_ob = {"type": "ALCISTA", "high": ob_candle["high"] + ZONE_PADDING, "low": ob_candle["low"] - ZONE_PADDING, "index": range_low_index}
             dec = find_decisional(candles_list, new_index, "ALCISTA", range_low_index)
             if dec is not None:
                 dec["type"] = "ALCISTA"
@@ -842,7 +871,7 @@ def process_new_candle(candles_list, new_index):
                 prev_ob = active_ob
                 if prev_ob is not None:
                     prev_ob["end_index"] = new_index
-                active_ob = {"type": "BAJISTA", "high": ob_candle["high"], "low": ob_candle["low"], "index": range_high_index}
+                active_ob = {"type": "BAJISTA", "high": ob_candle["high"] + ZONE_PADDING, "low": ob_candle["low"] - ZONE_PADDING, "index": range_high_index}
             dec = find_decisional(candles_list, new_index, "BAJISTA", range_high_index)
             if dec is not None:
                 dec["type"] = "BAJISTA"
@@ -890,35 +919,57 @@ while len(bos_markers) < 2:
     last_direction = None
     candles.clear()
     price = 1000
+    # --- SISTEMA DE IMPULSO Y RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
     trend_dir = random.choice([-1, 1])
-    is_impulse = True
-    trend_length = random.randint(8, 15)
+    market_state = "impulse"
+    wave_count = 1  # Mantenido por compatibilidad
+    trend_length = random.randint(4, 6)
     trend_count = 0
-    trend_strength = random.uniform(4, 10)
+    trend_strength = random.uniform(10, 18)
+    current_dir = trend_dir
+    impulse_in_trend = 0
+
     for _ in range(180):
         trend_count += 1
+        
         if trend_count >= trend_length:
-            trend_dir *= -1
             trend_count = 0
-            is_impulse = not is_impulse
-            if is_impulse:
-                trend_length = random.randint(8, 15)
-                trend_strength = random.uniform(4, 12)
+            if market_state == "impulse":
+                market_state = "retracement"
+                trend_length = random.randint(2, 3)
+                trend_strength = random.uniform(5, 9)
+                current_dir = -trend_dir
+                impulse_in_trend += 1
             else:
-                if random.random() < 0.4:
-                    trend_length = random.randint(4, 8)
-                    trend_strength = random.uniform(6, 11)
-                else:
-                    trend_length = random.randint(8, 14)
-                    trend_strength = random.uniform(2, 6)
-        if random.random() < 0.80:
-            body = random.uniform(trend_strength * 0.3, trend_strength) * trend_dir
+                market_state = "impulse"
+                trend_length = random.randint(4, 6)
+                trend_strength = random.uniform(10, 18)
+                
+                # Cambio de tendencia tras 1-2 impulsos (Ciclos Ágiles)
+                if impulse_in_trend >= random.randint(1, 2):
+                    trend_dir *= -1
+                    impulse_in_trend = 0
+                current_dir = trend_dir
+
+        # Sesgo del tick basado en el estado actual
+        bias_prob = 0.82 if market_state == "impulse" else 0.65
+        
+        if random.random() < bias_prob:
+            body = random.uniform(trend_strength * 0.4, trend_strength * 1.1) * current_dir
         else:
-            body = random.uniform(1, trend_strength * 0.5) * -trend_dir
+            body = random.uniform(0.1, trend_strength * 0.5) * -current_dir
+            
         open_p = price
         close_p = open_p + body
-        high_p = max(open_p, close_p) + random.uniform(0.5, 3)
-        low_p = min(open_p, close_p) - random.uniform(0.5, 3)
+        
+        # --- MECHAS REALISTAS ---
+        wick_base = trend_strength * 0.2
+        wick_up = random.uniform(0.1, wick_base) if body > 0 else random.uniform(0.2, wick_base * 1.5)
+        wick_down = random.uniform(0.2, wick_base * 1.5) if body > 0 else random.uniform(0.1, wick_base)
+            
+        high_p = max(open_p, close_p) + wick_up
+        low_p = min(open_p, close_p) - wick_down
+        
         candles.append({"open": open_p, "close": close_p, "high": high_p, "low": low_p})
         price = close_p
     for i in range(1, len(candles)):
@@ -1480,7 +1531,6 @@ while app_running:
                     streamer_now = get_streamer_stats()
                     st_total = streamer_now["wins"] + streamer_now["losses"]
                     st_wr = int((streamer_now["wins"] / st_total * 100)) if st_total > 0 else 0
-                    st_profit_pct = ((streamer_now['balance'] - 10000) / 10000) * 100
                     st_panel_w = int(SCREEN_W * 0.62)
                     st_panel_h = int(SCREEN_H * 0.09)
                     st_bg_x = SCREEN_W // 2 - st_panel_w // 2
@@ -1512,9 +1562,10 @@ while app_running:
                     box_gap = int(st_panel_w * 0.01)
                     box_start_x = name_x + st_name.get_width() + 20
                     box_y = st_bg_y + (st_panel_h - box_h) // 2
+                    st_profit_fxp = streamer_now['balance'] - 10000
                     stats_boxes = [
                         ("BALANCE", f"{int(streamer_now['balance'])}", (0, 220, 255)),
-                        ("PROFIT", f"{st_profit_pct:+.1f}%", (38, 200, 154) if st_profit_pct >= 0 else GLOBAL_COLOR_BEAR),
+                        ("+/- FXP", f"{int(st_profit_fxp):+d} FXP", (38, 200, 154) if st_profit_fxp >= 0 else GLOBAL_COLOR_BEAR),
                         ("WINS", f"{streamer_now['wins']}", GLOBAL_COLOR_BULL),
                         ("LOSSES", f"{streamer_now['losses']}", GLOBAL_COLOR_BEAR),
                         ("WIN RATE", f"{st_wr}%", (200, 200, 220)),
@@ -1538,7 +1589,7 @@ while app_running:
                         pygame.draw.line(sep_surface, (0, 180, 220, alpha), (sx, 0), (sx, 1))
                     screen.blit(sep_surface, (int(SCREEN_W * 0.05), sep_y))
                     # Headers
-                    headers = ["#", "JUGADOR", "BALANCE (FXP)", "PROFIT", "W", "L", "WIN RATE"]
+                    headers = ["#", "JUGADOR", "BALANCE (FXP)", "+/- FXP", "W", "L", "WIN RATE"]
                     hx_positions = [0.05, 0.10, 0.30, 0.42, 0.52, 0.59, 0.67]
                     font_header = pygame.font.SysFont("Arial", int(SCREEN_H * 0.016), bold=True)
                     header_y = int(SCREEN_H * 0.22)
@@ -1661,14 +1712,14 @@ while app_running:
                             bal_color = (0, int(180 * fade_factor), int(200 * fade_factor))
                         bal_txt = font_row_name.render(f"{int(p['balance'])} FXP", True, bal_color)
                         screen.blit(bal_txt, (int(SCREEN_W * hx_positions[2]) + slide_offset, ry + (row_h - 3) // 2 - bal_txt.get_height() // 2))
-                        # PROFIT (% desde 10,000 FXP iniciales)
-                        profit_pct = ((p['balance'] - 10000) / 10000) * 100
-                        if profit_pct >= 0:
+                        # PROFIT (diferencia desde 10,000 FXP iniciales)
+                        profit_fxp = p['balance'] - 10000
+                        if profit_fxp >= 0:
                             profit_color = (38, 200, 154)
-                            profit_str = f"+{profit_pct:.1f}%"
+                            profit_str = f"+{int(profit_fxp)} FXP"
                         else:
                             profit_color = GLOBAL_COLOR_BEAR
-                            profit_str = f"{profit_pct:.1f}%"
+                            profit_str = f"{int(profit_fxp)} FXP"
                         profit_txt = font_row_stat.render(profit_str, True, profit_color)
                         screen.blit(profit_txt, (int(SCREEN_W * hx_positions[3]) + slide_offset, ry + (row_h - 3) // 2 - profit_txt.get_height() // 2))
                         # W
@@ -1822,13 +1873,13 @@ while app_running:
                 config_items = {
                     "timer": {"label": "Timer (segundos)", "type": "number", "min": 3, "max": 30, "step": 1},
                     "risk": {"label": "Riesgo por trade (FXP)", "type": "number", "min": 50, "max": 500, "step": 50},
-                    "tp_mult": {"label": "Ratio Meta:Riesgo", "type": "number", "min": 1.0, "max": 5.0, "step": 0.5},
+                    "tp_mult": {"label": "Multiplicador FXP", "type": "number", "min": 1.0, "max": 5.0, "step": 0.5},
                     "bot_enabled": {"label": "Bot LEAN FX", "type": "toggle"},
                     "bot_wr": {"label": "Bot Win Rate %", "type": "number", "min": 50, "max": 90, "step": 5},
                     "viewers_enabled": {"label": "Bots Viewers", "type": "toggle"},
                     "vol_music": {"label": "Volumen Música %", "type": "number", "min": 0, "max": 100, "step": 10},
                     "vol_fx": {"label": "Volumen Efectos %", "type": "number", "min": 0, "max": 100, "step": 10},
-                    "max_rr": {"label": "Max Meta Viewers (1:N)", "type": "number", "min": 1, "max": 10, "step": 1},
+                    "max_rr": {"label": "Meta Máxima Viewers", "type": "number", "min": 1, "max": 10, "step": 1},
                     "liq_interval": {"label": "Evento cada (minutos)", "type": "number", "min": 2, "max": 30, "step": 1},
                     "liq_a_target": {"label": "Meta likes (Evento A)", "type": "number", "min": 20, "max": 500, "step": 10},
                     "liq_c1_likes": {"label": "Nivel 1: likes requeridos", "type": "number", "min": 20, "max": 500, "step": 10},
@@ -2388,6 +2439,15 @@ while app_running:
     while running and app_running:
         clock.tick(60)
         current_time = pygame.time.get_ticks()
+        
+        # --- DEFINICIÓN DE VARIABLES DE DISEÑO (LAYOUT) ---
+        guide_w = int(SCREEN_W * 0.18)
+        guide_h = int(SCREEN_H * 0.62)
+        guide_x = int(SCREEN_W * 0.80)
+        guide_y = int(SCREEN_H * 0.32)
+        tel_box_x, tel_box_y = guide_x - 6, int(SCREEN_H * 0.02)
+        tel_box_w, tel_box_h = guide_w, 80
+
         screen.fill(GLOBAL_COLOR_BG)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -2523,13 +2583,7 @@ while app_running:
                         else:
                             bot_decision = "SELL"
                         
-                        # Activar sesgo del precio a favor del bot (70% win rate)
-                        if random.random() < BOT_WIN_RATE:
-                            bot_bias_active = True
-                            bot_bias_direction = 1 if bot_decision == "BUY" else -1
-                        else:
-                            bot_bias_active = True
-                            bot_bias_direction = -1 if bot_decision == "BUY" else 1
+                        # El sesgo artificial ha sido eliminado para un mercado 100% natural
                         bot_last_trade_time = current_time
                         bot_ops_this_hour += 1
                         trade_decided = True
@@ -2742,23 +2796,37 @@ while app_running:
             pass # Pausa absoluta: el precio no se mueve si hay audio sonando
         elif not zone_frozen and liquidity_event_active is None:
             if current_time - last_tick_time >= TICK_DELAY:
-                step_size = random.uniform(0.4, 1.8)
-                
-                # 1. Agotamiento de mercado (Prioridad Máxima - Forzar Reversa/BOS)
-                if market_exhaustion_active:
-                    if current_time - market_exhaustion_start < MARKET_EXHAUSTION_DURATION:
-                        # Forzar movimiento agresivo en dirección contraria (95% probabilidad)
-                        # Aumentamos el step_size para asegurar que rompa estructura
-                        boosted_step = step_size * 1.5
-                        tick_move = boosted_step * market_exhaustion_dir if random.random() < 0.95 else -boosted_step * market_exhaustion_dir
-                    else:
-                        market_exhaustion_active = False
-                        tick_move = step_size if random.random() < 0.5 else -step_size
-                # 2. Sesgo del bot
-                elif bot_bias_active and active_trade is not None:
-                    tick_move = step_size * bot_bias_direction if random.random() < 0.65 else -step_size * bot_bias_direction
+                # --- MOVER PRECIO (EURUSD Forex Style) ---
+                # Step size basado en el estado del mercado
+                if market_state == "retracement":
+                    step_size = random.uniform(0.05, 0.15) * trend_strength
                 else:
-                    tick_move = step_size if random.random() < 0.5 else -step_size
+                    step_size = random.uniform(0.12, 0.35) * trend_strength
+                
+                # Sesgo dinámico basado en Ondas de Elliott
+                current_candle_stretch = abs(current_candle["close"] - current_candle["open"])
+                max_natural_stretch = trend_strength * 1.2
+                stretch_factor = min(1.0, current_candle_stretch / max_natural_stretch)
+                
+                # Determinar dirección actual de la sub-onda
+                if market_state == "impulse":
+                    sub_wave_dir = trend_dir
+                elif market_state == "retracement":
+                    sub_wave_dir = -trend_dir
+                else: 
+                    sub_wave_dir = random.choice([-1, 1])
+                
+                # Probabilidad base según el estado (Ciclos Dinámicos)
+                base_bias = 0.82 if market_state == "impulse" else 0.65
+                
+                dynamic_bias = base_bias - (stretch_factor * 0.35)
+                
+                if random.random() < dynamic_bias:
+                    # Movimiento a favor: variar velocidad
+                    tick_move = step_size * random.uniform(0.7, 1.3) * sub_wave_dir
+                else:
+                    # Movimiento en contra: retroceso de tick (ruido de mercado)
+                    tick_move = -step_size * random.uniform(0.6, 1.2) * sub_wave_dir
                 
                 current_candle["close"] += tick_move
                 current_candle["high"] = max(current_candle["high"], current_candle["close"])
@@ -2856,7 +2924,6 @@ while app_running:
                         
                         if not active_trade["groups"]:
                             active_trade = None
-                            bot_bias_active = False
                             viewer_votes_display = []
                 # --- DETECTAR SI PRECIO LLEGA A UNA ZONA (solo 1 vez por zona) ---
                 if active_trade is None and not zone_frozen and viewer_trade_active is None and not audio_manager.is_playing() and liquidity_event_active is None:
@@ -2989,6 +3056,7 @@ while app_running:
                             if pl:
                                 update_player_balance(uname, max(8000, pl["balance"] - TRADE_RISK), loss=True)
                                 add_trade_history(uname, g_dir, "LOSS", -TRADE_RISK, 1.0)
+                                add_ticker_event(f"{uname} LOSS: -{TRADE_RISK} FXP")
                             viewer_streaks[uname] = 0
                     grp["resolved"] = True
                     SL_HIT_AUDIO_FLAG = True
@@ -3016,6 +3084,7 @@ while app_running:
                                 gain = int(TRADE_RISK * lvl["rr"])
                                 update_player_balance(uname, pl["balance"] + gain, win=True)
                                 add_trade_history(uname, g_dir, "WIN", gain, lvl["rr"])
+                                add_ticker_event(f"{uname} WIN: +{gain} FXP (RR {lvl['rr']})")
                             viewer_streaks[uname] = viewer_streaks.get(uname, 0) + 1
                             if viewer_streaks[uname] >= STREAK_MIN:
                                 streak_display = {"name": uname, "streak": viewer_streaks[uname], "start_time": current_time}
@@ -3073,6 +3142,43 @@ while app_running:
                     if active_trade is None:
                         viewer_votes_display = []
         if not audio_manager.juego_pausado and not zone_frozen and liquidity_event_active is None and current_time - last_candle_time >= CANDLE_DURATION:
+            # --- ACTUALIZAR ESTRUCTURA DE IMPULSO/RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
+            trend_count += 1
+            if trend_count >= trend_length:
+                trend_count = 0
+                if market_state == "impulse":
+                    market_state = "retracement"
+                    trend_length = random.randint(2, 3)
+                    trend_strength = random.uniform(6, 10)
+                    current_dir = -trend_dir
+                    impulse_in_trend += 1
+                else:
+                    market_state = "impulse"
+                    trend_length = random.randint(4, 6)
+                    trend_strength = random.uniform(11, 19)
+                    
+                    # Cambio de tendencia tras 1-2 impulsos (Ciclos Ágiles)
+                    if impulse_in_trend >= random.randint(1, 2):
+                        trend_dir *= -1
+                        impulse_in_trend = 0
+                    current_dir = trend_dir
+            
+            # Aplicar mechas realistas al cierre
+            wick_ratio = 0.25 if market_state == "retracement" else 0.15
+            wick_up = random.uniform(0.1, trend_strength * wick_ratio)
+            wick_down = random.uniform(0.1, trend_strength * wick_ratio)
+            
+            # Si la vela es de rechazo (mecha larga en contra), aumentamos una
+            if (current_candle["close"] > current_candle["open"] and current_dir < 0) or \
+               (current_candle["close"] < current_candle["open"] and current_dir > 0):
+                if random.random() < 0.5:
+                    wick_up *= 2.2
+                else:
+                    wick_down *= 2.2
+            
+            current_candle["high"] = max(current_candle["high"], max(current_candle["open"], current_candle["close"]) + wick_up)
+            current_candle["low"] = min(current_candle["low"], min(current_candle["open"], current_candle["close"]) - wick_down)
+            
             candles.append(current_candle.copy())
             # Resetear cooldown de spam por vela en el chat de TikTok
             tiktok_chat.reset_candle_cooldown()
@@ -3223,6 +3329,18 @@ while app_running:
                 if ob_label:
                     label_txt = font_ob.render(ob_label, True, (255, 255, 255))
                     label_rect = label_txt.get_rect(center=(ob_x_start + ob_width // 2, ob_y_high + ob_height // 2))
+                    
+                    # Realce estético: Cuadro con fondo oscuro y borde cian brillante (glow)
+                    padding_h, padding_v = 8, 4
+                    bg_rect = label_rect.inflate(padding_h * 2, padding_v * 2)
+                    pygame.draw.rect(ob_surface, (5, 12, 25, 240), bg_rect, border_radius=4)
+                    
+                    # Efecto de resplandor (glow) cian eléctrico intenso
+                    glow_color = (0, 255, 255)
+                    for i in range(3):
+                        alpha = 180 // (i + 1)
+                        pygame.draw.rect(ob_surface, (*glow_color, alpha), bg_rect.inflate(i*2, i*2), 1, border_radius=4+i)
+                    
                     ob_surface.blit(label_txt, label_rect)
             if active_decisional is not None:
                 # No dibujar si ya fue mitigada
@@ -3266,19 +3384,6 @@ while app_running:
                             else:
                                 dec_color = (*GLOBAL_COLOR_BEAR, 15)
                             pygame.draw.rect(ob_surface, dec_color, (dec_x_start, dec_y_high, dec_width, dec_height))
-            if active_fvg is not None:
-                fvg_vis = active_fvg["index"] - visible_start_global
-                if 0 <= fvg_vis < len(visible_candles):
-                    fvg_x_start = int(start_x + (fvg_vis * spacing))
-                    fvg_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
-                    fvg_y_high = center_y - int((active_fvg["high"] - view_center_price) * vertical_zoom)
-                    fvg_y_low = center_y - int((active_fvg["low"] - view_center_price) * vertical_zoom)
-                    fvg_height = max(1, fvg_y_low - fvg_y_high)
-                    fvg_width = max(1, fvg_x_end - fvg_x_start)
-                    pygame.draw.rect(ob_surface, (255, 255, 0, 25), (fvg_x_start, fvg_y_high, fvg_width, fvg_height))
-                    fvg_txt = font_ob.render("FVG", True, (255, 255, 0))
-                    fvg_rect = fvg_txt.get_rect(center=(fvg_x_start + fvg_width // 2, fvg_y_high + fvg_height // 2))
-                    ob_surface.blit(fvg_txt, fvg_rect)
             screen.blit(ob_surface, (0, 0))
             for index, candle in enumerate(visible_candles):
                 x_pos = int(start_x + (index * spacing))
@@ -3356,7 +3461,8 @@ while app_running:
                 if seconds_left <= 5.0 and current_second != last_tick_second and seconds_left > 0:
                     play_sound(sound_tick)
                     last_tick_second = current_second
-                # === Mix C+A: Panel lateral con estilo banner (sin "ZONA DETECTADA") ===
+                # === ELIMINADO: Panel lateral antiguo (Reposicionado al centro) ===
+                """
                 slide_progress = min(1.0, (elapsed) / 200.0)  # 200ms slide rápido
                 panel_w = int(SCREEN_W * 0.20)
                 panel_h = int(SCREEN_H * 0.14)
@@ -3380,8 +3486,8 @@ while app_running:
                 timer_txt = font_timer_mix.render(f"{seconds_left:.1f}s", True, (255, 255, 255))
                 # Sombra del timer
                 timer_shadow = font_timer_mix.render(f"{seconds_left:.1f}s", True, (0, 100, 130))
-                screen.blit(timer_shadow, (panel_x + 14, panel_y + int(panel_h * 0.10) + 2))
-                screen.blit(timer_txt, (panel_x + 12, panel_y + int(panel_h * 0.10)))
+                # screen.blit(timer_shadow, (panel_x + 14, panel_y + int(panel_h * 0.10) + 2))
+                # screen.blit(timer_txt, (panel_x + 12, panel_y + int(panel_h * 0.10)))
                 # Barra de progreso (más ancha, con glow)
                 bar_w_m = int(panel_w * 0.85)
                 bar_h_m = 8
@@ -3402,37 +3508,148 @@ while app_running:
                     bar_glow = pygame.Surface((fill_w, bar_h_m + 6), pygame.SRCALPHA)
                     bar_glow.fill((bar_color[0], bar_color[1], bar_color[2], 30))
                     screen.blit(bar_glow, (bar_x_m, bar_y_m - 3))
-                # "ESCRIBE BUY O SELL" más grande
+                # "ESCRIBE SUBE O BAJA" más grande
                 font_escribe_m = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
-                escribe_txt = font_escribe_m.render("ESCRIBE BUY O SELL", True, (0, 200, 220))
+                escribe_txt = font_escribe_m.render("ESCRIBE SUBE O BAJA", True, (0, 200, 220))
                 screen.blit(escribe_txt, (panel_x + 12, panel_y + int(panel_h * 0.78)))
-                # --- PANEL VIEWERS centrado arriba ---
+                """
+
+                # === NUEVO TEMPORIZADOR CENTRAL FLOTANTE (ESTILO CYBERPUNK HUD) ===
+                if seconds_left > 0:
+                    # Configuración de colores según tensión (crítico < 3s)
+                    is_critical = seconds_left < 3.0
+                    accent_color = (255, 50, 50) if is_critical else (0, 255, 255)
+                    glow_color = (150, 0, 0) if is_critical else (0, 150, 200)
+                    
+                    # Efecto de parpadeo rápido en estado crítico
+                    if is_critical and (curr_ticks // 200) % 2 == 0:
+                        accent_color = (255, 255, 255)
+                    
+                    timer_w = int(SCREEN_W * 0.28)
+                    timer_h = int(SCREEN_H * 0.12)
+                    timer_x = (SCREEN_W - timer_w) // 2
+                    timer_y = int(SCREEN_H * 0.005)
+                    
+                    # 1. FONDO HUD (Translúcido y oscuro)
+                    timer_rect = pygame.Rect(timer_x, timer_y, timer_w, timer_h)
+                    s_bg = pygame.Surface((timer_w, timer_h), pygame.SRCALPHA)
+                    pygame.draw.rect(s_bg, (5, 10, 20, 210), (0, 0, timer_w, timer_h), border_radius=4)
+                    screen.blit(s_bg, (timer_x, timer_y))
+                    
+                    # 2. BORDES TÉCNICOS Y ESQUINAS CYBER
+                    pygame.draw.rect(screen, (*accent_color, 80), timer_rect, 1, border_radius=4)
+                    
+                    # Esquinas reforzadas (L-shapes)
+                    c_len = 15
+                    # Arriba-Izquierda
+                    pygame.draw.line(screen, accent_color, (timer_x, timer_y), (timer_x + c_len, timer_y), 3)
+                    pygame.draw.line(screen, accent_color, (timer_x, timer_y), (timer_x, timer_y + c_len), 3)
+                    # Arriba-Derecha
+                    pygame.draw.line(screen, accent_color, (timer_x + timer_w, timer_y), (timer_x + timer_w - c_len, timer_y), 3)
+                    pygame.draw.line(screen, accent_color, (timer_x + timer_w, timer_y), (timer_x + timer_w, timer_y + c_len), 3)
+                    # Abajo-Izquierda
+                    pygame.draw.line(screen, accent_color, (timer_x, timer_y + timer_h), (timer_x + c_len, timer_y + timer_h), 3)
+                    pygame.draw.line(screen, accent_color, (timer_x, timer_y + timer_h), (timer_x, timer_y + timer_h - c_len), 3)
+                    # Abajo-Derecha
+                    pygame.draw.line(screen, accent_color, (timer_x + timer_w, timer_y + timer_h), (timer_x + timer_w - c_len, timer_y + timer_h), 3)
+                    pygame.draw.line(screen, accent_color, (timer_x + timer_w, timer_y + timer_h), (timer_x + timer_w, timer_y + timer_h - c_len), 3)
+
+                    # 3. TEXTO TEMPORIZADOR GIGANTE
+                    font_huge = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.075), bold=True)
+                    timer_str = f"{seconds_left:.1f}s"
+                    
+                    # Resplandor dinámico
+                    pulse_val = (math.sin(curr_ticks * 0.01) + 1) / 2
+                    glow_a = int(50 + 100 * pulse_val)
+                    for off in [(-2,0), (2,0), (0,-2), (0,2)]:
+                        glow_surf = font_huge.render(timer_str, True, (*glow_color, glow_a))
+                        glow_rect = glow_surf.get_rect(center=(timer_x + timer_w//2 + off[0], timer_y + timer_h//2 - 10 + off[1]))
+                        screen.blit(glow_surf, glow_rect)
+                    
+                    t_surf = font_huge.render(timer_str, True, (255, 255, 255))
+                    t_rect = t_surf.get_rect(center=(timer_x + timer_w//2, timer_y + timer_h//2 - 10))
+                    screen.blit(t_surf, t_rect)
+                    
+                    # 4. BARRA DE PROGRESO INFERIOR (DINÁMICA)
+                    bar_w = timer_w - 40
+                    bar_h = 6
+                    bar_x = timer_x + 20
+                    bar_y = timer_y + timer_h - 42
+                    progress = remaining / TIMER_DURATION
+                    
+                    # Fondo de la barra
+                    pygame.draw.rect(screen, (30, 40, 50), (bar_x, bar_y, bar_w, bar_h), border_radius=3)
+                    # Relleno de la barra
+                    fill_w = int(bar_w * progress)
+                    if fill_w > 0:
+                        pygame.draw.rect(screen, accent_color, (bar_x, bar_y, fill_w, bar_h), border_radius=3)
+                        # Glow en la punta de la barra
+                        if fill_w > 4:
+                            pygame.draw.circle(screen, (255, 255, 255), (bar_x + fill_w, bar_y + bar_h//2), 3)
+
+                    # 5. SUBTEXTO DE INSTRUCCIÓN
+                    font_sub = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.020), bold=True)
+                    sub_txt = font_sub.render("ESCRIBE SUBE O BAJA", True, accent_color)
+                    sub_rect = sub_txt.get_rect(center=(timer_x + timer_w//2, timer_y + timer_h - 20))
+                    
+                    # Parpadeo de instrucción
+                    if (curr_ticks // 400) % 2 == 0:
+                        screen.blit(sub_txt, sub_rect)
+
+                # --- PANEL VIEWERS (REPOSICIONADO Y REDISEÑADO) ---
                 if viewer_votes:
                     buy_count = sum(1 for v in viewer_votes if v["vote"] == "BUY")
                     sell_count = sum(1 for v in viewer_votes if v["vote"] == "SELL")
                     total_votes = buy_count + sell_count
-                    vbox_w = int(SCREEN_W * 0.24)
-                    vbox_h = int(SCREEN_H * 0.07)
-                    vbox_x = SCREEN_W // 2 - vbox_w // 2
-                    vbox_y = int(SCREEN_H * 0.01)
-                    # Fondo
+                    
+                    vbox_w = guide_w
+                    vbox_h = int(SCREEN_H * 0.11)
+                    vbox_x = guide_x - 6
+                    vbox_y = tel_box_y + tel_box_h + 15
+                    
+                    # 1. FONDO HUD CYBERPUNK
                     vote_bg = pygame.Surface((vbox_w, vbox_h), pygame.SRCALPHA)
-                    vote_bg.fill((5, 10, 20, 230))
+                    pygame.draw.rect(vote_bg, (5, 10, 20, 225), (0, 0, vbox_w, vbox_h), border_radius=6)
+                    
+                    # Borde Neón Pulsante
+                    pulse_io = (math.sin(current_time * 0.005) + 1) / 2
+                    neon_a = int(150 + 105 * pulse_io)
+                    pygame.draw.rect(vote_bg, (0, 255, 255, neon_a), (0, 0, vbox_w, vbox_h), 2, border_radius=6)
+                    
+                    # Brillo exterior sutil
+                    for i in range(3):
+                        pygame.draw.rect(vote_bg, (0, 200, 255, 30 // (i+1)), (-i, -i, vbox_w+i*2, vbox_h+i*2), 1, border_radius=6+i)
+                    
                     screen.blit(vote_bg, (vbox_x, vbox_y))
-                    # Borde cyan
-                    pygame.draw.rect(screen, (0, 180, 220), (vbox_x, vbox_y, vbox_w, vbox_h), 2, border_radius=5)
-                    # "VIEWERS" centrado arriba
-                    font_vw_label = pygame.font.SysFont("Arial", int(SCREEN_H * 0.013), bold=True)
-                    vw_lbl = font_vw_label.render(f"VIEWERS ({total_votes})", True, (0, 200, 220))
-                    screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.22))))
-                    # BUY y SELL grandes
-                    font_vote_big = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
-                    buy_txt = font_vote_big.render(f"BUY: {buy_count}", True, (38, 200, 154))
-                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
-                    screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.65))))
-                    screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.65))))
-                    # Separador vertical
-                    pygame.draw.line(screen, (0, 100, 130), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.85)), 1)
+                    
+                    # 2. TÍTULO Y TOTAL
+                    font_vw_label = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016), bold=True)
+                    vw_lbl = font_vw_label.render(f"VOTOS EN VIVO: {total_votes}", True, (0, 220, 255))
+                    screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.20))))
+                    
+                    # 3. CONTADORES SUBE / BAJA
+                    font_vote_big = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.038), bold=True)
+                    font_sub = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.014), bold=True)
+                    
+                    # SUBE (Verde Neón)
+                    buy_txt = font_vote_big.render(f"{buy_count}", True, (0, 255, 127))
+                    buy_lbl = font_sub.render("SUBE", True, (0, 255, 127))
+                    
+                    # BAJA (Rojo Neón)
+                    sell_txt = font_vote_big.render(f"{sell_count}", True, (255, 49, 49))
+                    sell_lbl = font_sub.render("BAJA", True, (255, 49, 49))
+                    
+                    # Renderizado de textos
+                    screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(buy_lbl, buy_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.85))))
+                    
+                    screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(sell_lbl, sell_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.85))))
+                    
+                    # Separador vertical técnico
+                    pygame.draw.line(screen, (0, 100, 130), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.90)), 2)
             elif active_trade is not None and "groups" in active_trade:
                 # LEAN FX operando - mostrar info del trade
                 info_x = int(SCREEN_W * 0.05)
@@ -3463,43 +3680,110 @@ while app_running:
                     buy_count = sum(1 for v in viewer_votes_display if v["vote"] == "BUY")
                     sell_count = sum(1 for v in viewer_votes_display if v["vote"] == "SELL")
                     total_votes = buy_count + sell_count
-                    vbox_w = int(SCREEN_W * 0.24)
-                    vbox_h = int(SCREEN_H * 0.07)
-                    vbox_x = SCREEN_W // 2 - vbox_w // 2
-                    vbox_y = int(SCREEN_H * 0.01)
+                    
+                    vbox_w = guide_w
+                    vbox_h = int(SCREEN_H * 0.11)
+                    vbox_x = guide_x - 6
+                    vbox_y = tel_box_y + tel_box_h + 15
+                    
+                    # 1. FONDO HUD CYBERPUNK
                     vote_bg = pygame.Surface((vbox_w, vbox_h), pygame.SRCALPHA)
-                    vote_bg.fill((5, 10, 20, 230))
+                    pygame.draw.rect(vote_bg, (5, 10, 20, 225), (0, 0, vbox_w, vbox_h), border_radius=6)
+                    
+                    # Borde Neón Pulsante
+                    pulse_io = (math.sin(current_time * 0.005) + 1) / 2
+                    neon_a = int(150 + 105 * pulse_io)
+                    pygame.draw.rect(vote_bg, (0, 255, 255, neon_a), (0, 0, vbox_w, vbox_h), 2, border_radius=6)
+                    
+                    # Brillo exterior sutil
+                    for i in range(3):
+                        pygame.draw.rect(vote_bg, (0, 200, 255, 30 // (i+1)), (-i, -i, vbox_w+i*2, vbox_h+i*2), 1, border_radius=6+i)
+                    
                     screen.blit(vote_bg, (vbox_x, vbox_y))
-                    pygame.draw.rect(screen, (0, 180, 220), (vbox_x, vbox_y, vbox_w, vbox_h), 2, border_radius=5)
-                    font_vw_label = pygame.font.SysFont("Arial", int(SCREEN_H * 0.013), bold=True)
-                    vw_lbl = font_vw_label.render(f"VIEWERS ({total_votes})", True, (0, 200, 220))
-                    screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.22))))
-                    font_vote_big = pygame.font.SysFont("Arial", int(SCREEN_H * 0.022), bold=True)
-                    buy_txt = font_vote_big.render(f"BUY: {buy_count}", True, (38, 200, 154))
-                    sell_txt = font_vote_big.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
-                    screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.65))))
-                    screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.65))))
-                    pygame.draw.line(screen, (0, 100, 130), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.85)), 1)
+                    
+                    # 2. TÍTULO Y TOTAL
+                    font_vw_label = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016), bold=True)
+                    vw_lbl = font_vw_label.render(f"VOTOS EN VIVO: {total_votes}", True, (0, 220, 255))
+                    screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.20))))
+                    
+                    # 3. CONTADORES SUBE / BAJA
+                    font_vote_big = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.038), bold=True)
+                    font_sub = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.014), bold=True)
+                    
+                    # SUBE (Verde Neón)
+                    buy_txt = font_vote_big.render(f"{buy_count}", True, (0, 255, 127))
+                    buy_lbl = font_sub.render("SUBE", True, (0, 255, 127))
+                    
+                    # BAJA (Rojo Neón)
+                    sell_txt = font_vote_big.render(f"{sell_count}", True, (255, 49, 49))
+                    sell_lbl = font_sub.render("BAJA", True, (255, 49, 49))
+                    
+                    # Renderizado de textos
+                    screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(buy_lbl, buy_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.85))))
+                    
+                    screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(sell_lbl, sell_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.85))))
+                    
+                    # Separador vertical técnico
+                    pygame.draw.line(screen, (0, 100, 130), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.90)), 2)
             elif viewer_trade_active is not None:
-                # Viewers operando - cuadro resumen
-                info_x = int(SCREEN_W * 0.05)
-                info_y = int(SCREEN_H * 0.03)
+                # Viewers operando - Cuadro resumen (REPOSICIONADO Y REDISEÑADO)
                 if viewer_votes:
                     buy_count = sum(1 for v in viewer_votes if v["vote"] == "BUY")
                     sell_count = sum(1 for v in viewer_votes if v["vote"] == "SELL")
-                    vote_font = pygame.font.SysFont("Arial", int(SCREEN_H * 0.018), bold=True)
-                    vbox_w = int(SCREEN_W * 0.20)
-                    vbox_h = int(SCREEN_H * 0.05)
+                    total_votes = buy_count + sell_count
+                    
+                    vbox_w = guide_w
+                    vbox_h = int(SCREEN_H * 0.11)
+                    vbox_x = guide_x - 6
+                    vbox_y = tel_box_y + tel_box_h + 15
+                    
+                    # 1. FONDO HUD CYBERPUNK
                     vote_bg = pygame.Surface((vbox_w, vbox_h), pygame.SRCALPHA)
-                    vote_bg.fill((10, 10, 20, 210))
-                    screen.blit(vote_bg, (info_x, info_y))
-                    pygame.draw.rect(screen, (0, 150, 180), (info_x, info_y, vbox_w, vbox_h), 1, border_radius=3)
-                    vw_txt = vote_font.render("VIEWERS", True, (0, 200, 220))
-                    screen.blit(vw_txt, (info_x + 5, info_y + 3))
-                    buy_txt = vote_font.render(f"BUY: {buy_count}", True, GLOBAL_COLOR_BULL)
-                    sell_txt = vote_font.render(f"SELL: {sell_count}", True, GLOBAL_COLOR_BEAR)
-                    screen.blit(buy_txt, (info_x + 5, info_y + int(SCREEN_H * 0.025)))
-                    screen.blit(sell_txt, (info_x + int(SCREEN_W * 0.10), info_y + int(SCREEN_H * 0.025)))
+                    pygame.draw.rect(vote_bg, (5, 10, 20, 225), (0, 0, vbox_w, vbox_h), border_radius=6)
+                    
+                    # Borde Neón Pulsante
+                    pulse_io = (math.sin(current_time * 0.005) + 1) / 2
+                    neon_a = int(150 + 105 * pulse_io)
+                    pygame.draw.rect(vote_bg, (0, 255, 255, neon_a), (0, 0, vbox_w, vbox_h), 2, border_radius=6)
+                    
+                    # Brillo exterior sutil
+                    for i in range(3):
+                        pygame.draw.rect(vote_bg, (0, 200, 255, 30 // (i+1)), (-i, -i, vbox_w+i*2, vbox_h+i*2), 1, border_radius=6+i)
+                    
+                    screen.blit(vote_bg, (vbox_x, vbox_y))
+                    
+                    # 2. TÍTULO Y TOTAL
+                    font_vw_label = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016), bold=True)
+                    vw_lbl = font_vw_label.render(f"VOTOS EN VIVO: {total_votes}", True, (0, 220, 255))
+                    screen.blit(vw_lbl, vw_lbl.get_rect(center=(vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.20))))
+                    
+                    # 3. CONTADORES SUBE / BAJA
+                    font_vote_big = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.038), bold=True)
+                    font_sub = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.014), bold=True)
+                    
+                    # SUBE (Verde Neón)
+                    buy_txt = font_vote_big.render(f"{buy_count}", True, (0, 255, 127))
+                    buy_lbl = font_sub.render("SUBE", True, (0, 255, 127))
+                    
+                    # BAJA (Rojo Neón)
+                    sell_txt = font_vote_big.render(f"{sell_count}", True, (255, 49, 49))
+                    sell_lbl = font_sub.render("BAJA", True, (255, 49, 49))
+                    
+                    # Renderizado de textos
+                    screen.blit(buy_txt, buy_txt.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(buy_lbl, buy_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.28), vbox_y + int(vbox_h * 0.85))))
+                    
+                    screen.blit(sell_txt, sell_txt.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.58))))
+                    screen.blit(sell_lbl, sell_lbl.get_rect(center=(vbox_x + int(vbox_w * 0.72), vbox_y + int(vbox_h * 0.85))))
+                    
+                    # Separador vertical técnico
+                    pygame.draw.line(screen, (0, 100, 130), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.40)), 
+                                     (vbox_x + vbox_w // 2, vbox_y + int(vbox_h * 0.90)), 2)
             # --- DIBUJAR POSICIONES EN EL GRAFICO ---
             # Trade del streamer (EXTREMO) - DUAL RENDERING
             if active_trade is not None and "groups" in active_trade:
@@ -3581,8 +3865,8 @@ while app_running:
                     sl_line_alpha = 100 if grp.get("resolved") else 255
                     for x in range(box_start_x, box_end_x, 10):
                         pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
-                    # Etiqueta de SL (Puntuación flotante fija)
-                    sl_label = font_trade.render("-100 FXP", True, (255, 100, 100))
+                    # Etiqueta de Límite de pérdida (Puntuación flotante fija)
+                    sl_label = font_trade.render("SL", True, (255, 100, 100))
                     screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
                         
                     # Niveles de Meta (dibujamos 1, 2, 3 y MAX_RR)
@@ -3595,7 +3879,7 @@ while app_running:
                                 pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
                             
                             label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
-                            lvl_label = font_trade.render(f"Meta {rr_val} (+{rr_val*100} FXP)", True, label_col)
+                            lvl_label = font_trade.render(f"META {rr_val}", True, label_col)
                             screen.blit(lvl_label, (box_start_x, lvl_y - 14))
 
                     # Línea de entrada
@@ -3708,8 +3992,8 @@ while app_running:
                     sl_line_alpha = 100 if grp.get("resolved") else 255
                     for x in range(box_start_x, box_end_x, 10):
                         pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
-                    # Etiqueta de SL (Puntuación flotante fija)
-                    sl_label = font_trade.render("-100 FXP", True, (255, 100, 100))
+                    # Etiqueta de Límite de pérdida (Puntuación flotante fija)
+                    sl_label = font_trade.render("SL", True, (255, 100, 100))
                     screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
                     # Líneas punteadas sutiles para cada nivel R:R (Meta)
                     for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
@@ -3720,7 +4004,7 @@ while app_running:
                         # Etiqueta MetaX - tachado o gris si ya se resolvió
                         rr_val = int(lvl['rr'])
                         label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
-                        lvl_label = font_trade.render(f"Meta {rr_val} (+{rr_val*100} FXP)", True, label_col)
+                        lvl_label = font_trade.render(f"META {rr_val}", True, label_col)
                         screen.blit(lvl_label, (box_start_x, lvl_y - 14))
                     # Línea de entrada
                     for x in range(box_start_x, box_end_x, 12):
@@ -3939,20 +4223,15 @@ while app_running:
             elapsed = curr_ticks - guide_animation_start
             anim_progress = min(1.0, elapsed / 1000.0) 
             
-            guide_w = int(SCREEN_W * 0.14)  # Panel más angosto y compacto
-            guide_h = int(SCREEN_H * 0.58)
-            guide_x = int(SCREEN_W * 0.84)  # Movido un poco más a la derecha para compensar ancho
-            guide_y = int(SCREEN_H * 0.12)
-            
             # 1. PANEL HUD CIBERNÉTICO (Fondo con Matriz de Puntos y Rejilla)
             panel_surf = pygame.Surface((guide_w, guide_h), pygame.SRCALPHA)
-            # Fondo ultra-profundo translúcido
-            pygame.draw.rect(panel_surf, (5, 8, 15, 220), (0, 0, guide_w, guide_h), border_radius=10)
+            # Fondo ultra-profundo translúcido con desenfoque simulado
+            pygame.draw.rect(panel_surf, (5, 8, 15, 235), (0, 0, guide_w, guide_h), border_radius=6)
             
             # Matriz de Puntos (Cyber Grid)
             dot_color = (0, 200, 255, 30)
-            for dx in range(0, guide_w, 15):
-                for dy in range(0, guide_h, 15):
+            for dx in range(0, guide_w, 18):
+                for dy in range(0, guide_h, 18):
                     pygame.draw.circle(panel_surf, dot_color, (dx, dy), 1)
             
             # Rejilla de Coordenadas (Más sutil)
@@ -3976,45 +4255,68 @@ while app_running:
             pygame.draw.lines(panel_surf, bracket_color, False, [(guide_w-b_len, guide_h), (guide_w, guide_h), (guide_w, guide_h-b_len)], b_thick)
             
             # Brillo de Borde Neón (Refinado)
-            for i in range(3):
-                glow_a = 150 // (i + 1)
-                pygame.draw.rect(panel_surf, (0, 220, 255, glow_a), (-i, -i, guide_w + i*2, guide_h + i*2), 1, border_radius=10 + i)
+            for i in range(2):
+                glow_a = 100 // (i + 1)
+                pygame.draw.rect(panel_surf, (0, 220, 255, glow_a), (-i, -i, guide_w + i*2, guide_h + i*2), 1, border_radius=6 + i)
             
             panel_surf.set_alpha(int(255 * anim_progress))
-            screen.blit(panel_surf, (guide_x - 10, guide_y - 10))
+            screen.blit(panel_surf, (guide_x - 6, guide_y - 6))
             
             # 3. TÍTULO TERMINAL HACKING
-            font_guide_title = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.030), bold=True)
+            font_guide_title = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.028), bold=True)
             font_guide_subtitle = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016))
             font_deco = pygame.font.SysFont("Consolas", 9)
             
             # 0. TELEMETRÍA DE RONDAS Y VELA (Minimapa de tiempo)
             if anim_progress > 0.1:
                 round_num = len(candles) - initial_candle_count + 1
-                font_tel = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.015), bold=True)
+                font_tel = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016), bold=True)
                 
+                # --- NUEVA TELEMETRÍA SUPERIOR DERECHA (RONDA Y TIMER) ---
+                
+                # Fondo translúcido para Telemetría
+                tel_bg = pygame.Surface((tel_box_w, tel_box_h), pygame.SRCALPHA)
+                pygame.draw.rect(tel_bg, (5, 10, 20, 200), (0, 0, tel_box_w, tel_box_h), border_radius=6)
+                pygame.draw.rect(tel_bg, (0, 255, 255, 50), (0, 0, tel_box_w, tel_box_h), 1, border_radius=6)
+                screen.blit(tel_bg, (tel_box_x, tel_box_y))
+
                 # Texto de Ronda
                 ronda_txt = font_tel.render(f"RONDA: #{round_num:02d}", True, (0, 255, 255))
-                screen.blit(ronda_txt, (guide_x, guide_y - 55))
+                screen.blit(ronda_txt, (tel_box_x + 6, tel_box_y + 6))
                 
                 # Barra de tiempo de vela (Minimapa)
                 candle_elapsed = curr_ticks - last_candle_time
                 candle_pct = min(1.0, candle_elapsed / CANDLE_DURATION)
                 
-                bar_w = guide_w - 20
-                bar_h = 4
-                pygame.draw.rect(screen, (20, 30, 50), (guide_x, guide_y - 40, bar_w, bar_h), border_radius=2)
-                pygame.draw.rect(screen, (0, 220, 255), (guide_x, guide_y - 40, int(bar_w * candle_pct), bar_h), border_radius=2)
+                # --- TENSIÓN EN EL TEMPORIZADOR (ÚLTIMO SEGUNDO) ---
+                rem_ms = max(0, CANDLE_DURATION - candle_elapsed)
+                is_tense = rem_ms < 1000 and rem_ms > 0
+                
+                if is_tense:
+                    # Parpadeo agresivo y sacudida
+                    blink = (curr_ticks // 100) % 2 == 0
+                    bar_color = (255, 50, 50) if blink else (0, 220, 255)
+                    rem_color = (255, 100, 100) if blink else (150, 180, 200)
+                    shake_x = random.randint(-1, 1)
+                    shake_y = random.randint(-1, 1)
+                else:
+                    bar_color = (0, 220, 255)
+                    rem_color = (150, 180, 200)
+                    shake_x, shake_y = 0, 0
+
+                bar_w = tel_box_w - 16
+                bar_h = 6
+                pygame.draw.rect(screen, (20, 30, 50), (tel_box_x + 8 + shake_x, tel_box_y + 45 + shake_y, bar_w, bar_h), border_radius=3)
+                pygame.draw.rect(screen, bar_color, (tel_box_x + 8 + shake_x, tel_box_y + 45 + shake_y, int(bar_w * candle_pct), bar_h), border_radius=3)
                 
                 # Tiempo restante
-                rem_ms = max(0, CANDLE_DURATION - candle_elapsed)
-                rem_txt = font_tel.render(f"NEXT: {rem_ms/1000:.1f}s", True, (150, 180, 200))
-                screen.blit(rem_txt, (guide_x, guide_y - 35))
+                rem_txt = font_tel.render(f"NEXT: {rem_ms/1000:.1f}s", True, rem_color)
+                screen.blit(rem_txt, (tel_box_x + 8 + shake_x, tel_box_y + 60 + shake_y))
 
-                # --- INDICADOR CIRCULAR DE CICLO (NUEVO) ---
-                circle_x = guide_x + rem_txt.get_width() + 12
-                circle_y = guide_y - 28
-                radius = 5
+                # --- INDICADOR CIRCULAR DE CICLO ---
+                circle_x = tel_box_x + 8 + rem_txt.get_width() + 10 + shake_x
+                circle_y = tel_box_y + 70 + shake_y
+                radius = 6
                 pygame.draw.circle(screen, (30, 45, 60), (circle_x, circle_y), radius, 1)
                 # Arco de progreso (0 a 360 grados)
                 angle = 360 * candle_pct
@@ -4038,83 +4340,117 @@ while app_running:
                 status_text = "> CMD_LINK: ACTIVE"
                 for off in [(-1,0), (1,0), (0,-1), (0,1)]:
                     glow_s = font_guide_subtitle.render(status_text, True, (0, 150, 100))
-                    screen.blit(glow_s, (guide_x + off[0], guide_y + int(SCREEN_H * 0.040) + off[1]))
+                    screen.blit(glow_s, (guide_x + off[0], guide_y + int(SCREEN_H * 0.055) + off[1]))
                 
                 guide_subtitle_txt = font_guide_subtitle.render(status_text, True, (0, 255, 150))
-                screen.blit(guide_subtitle_txt, (guide_x, guide_y + int(SCREEN_H * 0.040)))
+                screen.blit(guide_subtitle_txt, (guide_x, guide_y + int(SCREEN_H * 0.055)))
+
+                # Nueva línea: Guía de interacción para espectadores
+                interaction_text = "> USA EL CHAT"
+                for off in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    glow_i = font_guide_subtitle.render(interaction_text, True, (0, 150, 100))
+                    screen.blit(glow_i, (guide_x + off[0], guide_y + int(SCREEN_H * 0.085) + off[1]))
+                
+                interaction_txt = font_guide_subtitle.render(interaction_text, True, (0, 255, 150))
+                screen.blit(interaction_txt, (guide_x, guide_y + int(SCREEN_H * 0.085)))
                 
                 # Decoración Hexadecimal diminuta
                 hex_deco = font_deco.render("ID:" + hex(curr_ticks % 0xFFFF)[2:].upper() + " L_VER:3.8", True, (0, 150, 180))
-                screen.blit(hex_deco, (guide_x, guide_y - 20))
+                screen.blit(hex_deco, (guide_x, guide_y - 18))
 
             # 4. TARJETAS DE DATOS (Cyber Cards)
             if anim_progress > 0.4:
                 commands = [
-                    ("SUBE 1", "Meta 1 (+100 FXP)", (0, 255, 200)),
-                    ("SUBE 2", "Meta 2 (+200 FXP)", (0, 255, 200)),
-                    ("SUBE 3", "Meta 3 (+300 FXP)", (0, 255, 200)),
-                    ("BAJA 1", "Meta 1 (+100 FXP)", (255, 50, 80)),
-                    ("BAJA 2", "Meta 2 (+200 FXP)", (255, 50, 80)),
-                    ("BAJA 3", "Meta 3 (+300 FXP)", (255, 50, 80)),
+                    ("SUBE 1", "1:1 R:R", (0, 255, 200)),
+                    ("SUBE 2", "1:2 R:R", (0, 255, 200)),
+                    ("SUBE 3", "1:3 R:R", (0, 255, 200)),
+                    ("BAJA 1", "1:1 R:R", (255, 50, 80)),
+                    ("BAJA 2", "1:2 R:R", (255, 50, 80)),
+                    ("BAJA 3", "1:3 R:R", (255, 50, 80)),
                 ]
                 
-                font_cmd = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.024), bold=True)
-                font_target = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.015))
+                font_cmd = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.030), bold=True)
+                font_target = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.016), bold=True)
                 
-                item_y = guide_y + int(SCREEN_H * 0.09)
-                card_w = guide_w - 15
-                card_h = int(SCREEN_H * 0.065)
-                card_spacing = int(SCREEN_H * 0.080) # Incrementado ligeramente para mejor respiro
+                item_y = guide_y + int(SCREEN_H * 0.11)
+                card_w = guide_w - 16
+                card_h = int(SCREEN_H * 0.052)  # Tarjetas más altas
+                card_spacing = int(SCREEN_H * 0.062)  # Mayor separación vertical
                 
                 for i, (cmd, target, color) in enumerate(commands):
                     if anim_progress < 0.4 + (i * 0.07): continue
                     
                     # Mini-Tarjeta translúcida con bordes técnicos
-                    card_rect = pygame.Rect(guide_x - 5, item_y - 5, card_w, card_h)
+                    card_rect = pygame.Rect(guide_x - 4, item_y - 4, card_w, card_h)
                     pygame.draw.rect(screen, (15, 25, 45, 120), card_rect, border_radius=4)
                     pygame.draw.rect(screen, (*color, 40), card_rect, 1, border_radius=4)
                     
                     # Marcas de Telemetría diminutas en esquinas de tarjeta
-                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x+5, card_rect.y), 1)
-                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x, card_rect.y+5), 1)
+                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x+4, card_rect.y), 1)
+                    pygame.draw.line(screen, (*color, 100), (card_rect.x, card_rect.y), (card_rect.x, card_rect.y+4), 1)
                     
-                    # Icono Hexagonal Brillante
+                    # Icono Hexagonal Brillante (Centrado verticalmente)
                     hx_points = []
+                    hx_size = 6
+                    cy = card_rect.centery
                     for angle in range(0, 360, 60):
                         rad = math.radians(angle)
-                        hx_points.append((guide_x + 6 + 5 * math.cos(rad), item_y + 10 + 5 * math.sin(rad)))
+                        hx_points.append((guide_x + 8 + hx_size * math.cos(rad), cy + hx_size * math.sin(rad)))
                     pygame.draw.polygon(screen, color, hx_points, 0)
                     pygame.draw.polygon(screen, (255, 255, 255), hx_points, 1)
                     
                     # Texto Comando con sutil Glow
+                    cmd_txt = font_cmd.render(cmd, True, color)
+                    cmd_y = card_rect.centery - cmd_txt.get_height() // 2
+                    
                     for off in [(-1,0), (1,0)]:
                         glow_c = font_cmd.render(cmd, True, (*color, 50))
-                        screen.blit(glow_c, (guide_x + 20 + off[0], item_y))
+                        screen.blit(glow_c, (guide_x + 24 + off[0], cmd_y))
                     
-                    cmd_txt = font_cmd.render(cmd, True, color)
-                    screen.blit(cmd_txt, (guide_x + 20, item_y))
+                    screen.blit(cmd_txt, (guide_x + 24, cmd_y))
                     
-                    # Meta y FXP en bloque de datos
-                    target_parts = target.split("(+")
-                    base_txt = font_target.render(target_parts[0], True, (130, 160, 180))
-                    screen.blit(base_txt, (guide_x + 20, item_y + 24))
-                    
-                    if len(target_parts) > 1:
-                        fxp_val = "+" + target_parts[1].replace(")", "")
-                        fxp_surf = font_target.render(fxp_val, True, (0, 255, 255))
-                        fxp_bg = pygame.Rect(guide_x + 20 + base_txt.get_width() + 4, item_y + 23, fxp_surf.get_width() + 4, 15)
-                        pygame.draw.rect(screen, (0, 80, 100, 100), fxp_bg)
-                        screen.blit(fxp_surf, (fxp_bg.x + 2, fxp_bg.y))
+                    # R:R alineado a la DERECHA EXTREMA
+                    rr_txt = font_target.render(target, True, (200, 220, 240))
+                    rr_y = card_rect.centery - rr_txt.get_height() // 2
+                    screen.blit(rr_txt, (card_rect.right - rr_txt.get_width() - 8, rr_y))
 
                     # Código de telemetría diminuto (falso)
                     tel_txt = font_deco.render(f"TK-{i}0{i}", True, (*color, 80))
-                    screen.blit(tel_txt, (card_rect.right - 35, card_rect.y + 5))
+                    screen.blit(tel_txt, (card_rect.right - 30, card_rect.y + 4))
 
                     item_y += card_spacing
                 
+                # 5. INDICADOR DE ESCALABILIDAD R:R (ACTUALIZADO 1:10 - MÁXIMA VISIBILIDAD)
+                if anim_progress > 0.7:
+                    # Tipografía más grande para impacto en móviles
+                    font_scaling = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.022), bold=True)
+                    rr_scale_text = "> ESCALA HASTA 1:10 R:R"
+                    
+                    # Banner de fondo translúcido tipo alerta
+                    banner_w = guide_w - 4
+                    banner_h = int(SCREEN_H * 0.045)
+                    banner_rect = pygame.Rect(guide_x - 4, item_y - 8, banner_w, banner_h)
+                    
+                    # Fondo oscuro con borde amarillo neón pulsante
+                    pygame.draw.rect(screen, (10, 20, 35, 220), banner_rect, border_radius=6)
+                    pulse = (math.sin(curr_ticks * 0.01) + 1) / 2
+                    glow_val = int(100 + 155 * pulse)
+                    pygame.draw.rect(screen, (255, 215, 0, glow_val), banner_rect, 2, border_radius=6)
+                    
+                    # Efecto de resplandor para el texto central
+                    for off in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        glow_rr = font_scaling.render(rr_scale_text, True, (180, 120, 0))
+                        screen.blit(glow_rr, (guide_x + 6 + off[0], banner_rect.centery - glow_rr.get_height() // 2 + off[1]))
+                    
+                    rr_scale_surf = font_scaling.render(rr_scale_text, True, (255, 255, 0))
+                    # Alineado a la izquierda dentro del banner con pequeño margen
+                    screen.blit(rr_scale_surf, (guide_x + 6, banner_rect.centery - rr_scale_surf.get_height() // 2))
+                
                 # 6. INDICADOR DE COOLDOWN / ESTADO DE PARTICIPACIÓN
                 if anim_progress > 0.8:
-                    status_y = guide_y + guide_h - 25
+                    # Ajuste de posición para que el HUD respire (borde inferior)
+                    # Bajar el texto de telemetría y estado para evitar solapamiento con la tarjeta BAJA 3
+                    status_y = guide_y + guide_h - 35
                     
                     # --- TELEMETRÍA DE VOLATILIDAD DINÁMICA (NUEVO) ---
                     if len(candles) > 5:
@@ -4131,12 +4467,31 @@ while app_running:
                     else:
                         vol_label, vol_color = "MERCADO: ESTABLE", (0, 255, 150)
                     
-                    font_vol = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.013), bold=True)
+                    font_vol = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.014), bold=True)
                     vol_surf = font_vol.render(vol_label, True, vol_color)
+                    
+                    # Contenedor inferior para volatilidad (Cyber Box)
+                    vol_bg_rect = pygame.Rect(guide_x - 4, status_y - 45, guide_w - 4, 28)
+                    pygame.draw.rect(screen, (5, 10, 20, 180), vol_bg_rect, border_radius=4)
+                    
+                    # --- EFECTO NEÓN DINÁMICO PARA VOLATILIDAD ALTA ---
+                    pulse = (math.sin(curr_ticks * 0.01) + 1) / 2
+                    if vol_label == "RIESGO: ACTIVO":
+                        glow_a = int(100 + 155 * pulse)
+                        pygame.draw.rect(screen, (*vol_color, glow_a), vol_bg_rect, 2, border_radius=4)
+                    elif vol_label == "VOLATILIDAD: ALTA":
+                        glow_a = int(50 + 100 * pulse)
+                        pygame.draw.rect(screen, (*vol_color, glow_a), vol_bg_rect, 1, border_radius=4)
+                    else:
+                        pygame.draw.rect(screen, (*vol_color, 80), vol_bg_rect, 1, border_radius=4)
+                    
                     # Punto de estado parpadeante sutil
                     if (curr_ticks // 500) % 2 == 0:
-                        pygame.draw.circle(screen, vol_color, (guide_x + 5, status_y - 12), 3)
-                    screen.blit(vol_surf, (guide_x + 15, status_y - 18))
+                        pygame.draw.circle(screen, vol_color, (guide_x + 8, status_y - 31), 2)
+                    
+                    # Alineación del texto centrada y con aire dentro de su tarjeta
+                    vol_rect = vol_surf.get_rect(center=(vol_bg_rect.centerx, vol_bg_rect.centery))
+                    screen.blit(vol_surf, vol_rect)
 
                     # Lógica de estado
                     if zone_frozen:
@@ -4155,7 +4510,7 @@ while app_running:
                     # Renderizar barra de estado
                     font_status = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.018), bold=True)
                     # Fondo sutil para el estado
-                    status_bg = pygame.Rect(guide_x - 5, status_y - 5, guide_w - 5, 25)
+                    status_bg = pygame.Rect(guide_x - 4, status_y - 12, guide_w - 4, 26)
                     pygame.draw.rect(screen, (5, 15, 30, 180), status_bg, border_radius=4)
                     
                     # Texto de estado parpadeante si es crítico
@@ -4165,7 +4520,41 @@ while app_running:
                     
                     if show_status:
                         status_txt = font_status.render(status_msg, True, status_color)
-                        screen.blit(status_txt, status_txt.get_rect(center=(guide_x + (guide_w-15)//2, status_y + 7)))
+                        screen.blit(status_txt, status_txt.get_rect(center=(guide_x + (guide_w-16)//2, status_y + 1)))
+                    
+                    # --- TICKER DE EVENTOS ESTILO CONSOLA (NUEVO) ---
+                    ticker_h = 24
+                    ticker_y = status_y + 18
+                    ticker_bg = pygame.Rect(guide_x - 4, ticker_y, guide_w - 4, ticker_h)
+                    pygame.draw.rect(screen, (2, 5, 10, 220), ticker_bg, border_radius=4)
+                    pygame.draw.rect(screen, (0, 255, 255, 30), ticker_bg, 1, border_radius=4)
+                    
+                    if ticker_events:
+                        # Mostrar solo el último evento con efecto de scroll/fade
+                        last_event = ticker_events[-1]
+                        time_since = curr_ticks - last_event["time"]
+                        
+                        if time_since < 5000: # Mostrar por 5 segundos
+                            # Efecto de "escritura" tipo terminal
+                            chars_to_show = int(time_since / 30)
+                            display_msg = "> " + last_event["msg"][:chars_to_show]
+                            
+                            # Cursor parpadeante al final
+                            if (curr_ticks // 300) % 2 == 0:
+                                display_msg += "_"
+                                
+                            font_ticker = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.014))
+                            ticker_surf = font_ticker.render(display_msg, True, (0, 255, 255))
+                            screen.blit(ticker_surf, (ticker_bg.x + 8, ticker_bg.y + 2))
+                        else:
+                            # Si no hay eventos recientes, mostrar un mensaje de sistema
+                            font_ticker = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.020))
+                            idle_msg = f"> SYSTEM_IDLE_{hex(curr_ticks//1000)[2:].upper()}"
+                            ticker_surf = font_ticker.render(idle_msg, True, (0, 100, 120))
+                            screen.blit(ticker_surf, (ticker_bg.x + 10, ticker_bg.y + 4))
+                    else:
+                        font_ticker = pygame.font.SysFont("Consolas", int(SCREEN_H * 0.020))
+                        screen.blit(font_ticker.render("> WAITING FOR EVENTS...", True, (0, 100, 120)), (ticker_bg.x + 10, ticker_bg.y + 4))
             
             # 5. SCANLINE Y EFECTO VISUAL CINEMATOGRÁFICO
             # Línea de escaneo más lenta y sutil
