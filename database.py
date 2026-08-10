@@ -459,8 +459,12 @@ def get_analytics_data(filter_type='hoy', custom_dates=None):
         where_clause = "date(start_time) >= date('now', '-3 days')"
     elif filter_type == '7d':
         where_clause = "date(start_time) >= date('now', '-7 days')"
+    elif filter_type == 'ayer_7d':
+        where_clause = "date(start_time) BETWEEN date('now', '-14 days') AND date('now', '-7 days')"
     elif filter_type == 'mes':
         where_clause = "date(start_time) >= date('now', 'start of month')"
+    elif filter_type == 'ayer_mes':
+        where_clause = "date(start_time) BETWEEN date('now', 'start of month', '-1 month') AND date('now', 'start of month', '-1 day')"
     elif filter_type == 'custom' and custom_dates:
         where_clause = "date(start_time) BETWEEN ? AND ?"
         params = [custom_dates[0], custom_dates[1]]
@@ -516,7 +520,16 @@ def get_analytics_data(filter_type='hoy', custom_dates=None):
 
     # Evolución (por día)
     query_evolution = f"""
-        SELECT date(start_time) as day, COUNT(*) as sessions, SUM(total_likes) as likes, SUM(total_rounds) as rounds
+        SELECT 
+            date(start_time) as day, 
+            COUNT(*) as sessions, 
+            SUM(total_likes) as likes, 
+            SUM(total_rounds) as rounds,
+            MAX(peak_viewers) as max_peak,
+            AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_viewers,
+            SUM(total_messages) as messages,
+            SUM(unique_participants_count) as participants,
+            SUM(fxp_distributed) as fxp
         FROM sessions
         WHERE {where_clause}
         GROUP BY day
@@ -527,7 +540,12 @@ def get_analytics_data(filter_type='hoy', custom_dates=None):
 
     # Mejor horario (agrupado por hora del día)
     query_hours = f"""
-        SELECT strftime('%H', start_time) as hour, SUM(total_likes) as likes, AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_viewers
+        SELECT 
+            strftime('%H', start_time) as hour, 
+            SUM(total_likes) as likes, 
+            AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_viewers,
+            SUM(total_messages) as messages,
+            SUM(unique_participants_count) as participants
         FROM sessions
         WHERE {where_clause}
         GROUP BY hour

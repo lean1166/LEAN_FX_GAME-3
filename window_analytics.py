@@ -1,14 +1,26 @@
 """
 LEAN FX GAME - Ventana de ANALYTICS (Fase 2)
 
-Proceso pygame independiente para mostrar estadísticas y métricas detalladas.
+Proceso de escritorio independiente (PyQt6) para mostrar estadísticas y métricas detalladas.
 Incluye filtros de tiempo y visualizaciones de rendimiento del canal.
 """
 import os
 import sys
-import pygame
-import math
 from datetime import datetime, timedelta
+
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QLabel, QTabWidget, QScrollArea, 
+                             QPushButton, QFrame, QGridLayout, QListWidget, QListWidgetItem,
+                             QDateEdit)
+from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtGui import QFont, QColor, QPalette
+
+# Integración de Matplotlib para PyQt6
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 
 from shared_paths import find_asset
 from database import (
@@ -18,756 +30,1150 @@ from database import (
     get_best_time_analysis, 
     get_comparison_data
 )
-from analytics_export import export_session_to_csv, export_period_to_csv
+from analytics_export import export_session_to_csv, export_period_to_csv, export_history_to_csv
 
-# --- CONFIGURACIÓN DE VENTANA ---
-WINDOW_W, WINDOW_H = 1200, 800
-REFRESH_INTERVAL_MS = 5000  # Refrescar datos cada 5 segundos
-FPS = 30
+# --- CONFIGURACIÓN Y ESTILO CYBERPUNK ---
+COLOR_BG = "#050505"  # Fondo oscuro absoluto
+COLOR_PANEL = "rgba(10, 15, 25, 200)"
+COLOR_NEON_CYAN = "#00DCFF"
+COLOR_NEON_GREEN = "#00FF7F" # Verde Neón (0, 255, 127)
+COLOR_NEON_RED = "#FF3131"   # Rojo Neón (255, 49, 49)
+COLOR_NEON_YELLOW = "#FFD700"
+COLOR_TEXT_DIM = "#506478"
+COLOR_TEXT_BRIGHT = "#FFFFFF"
 
-# --- COLORES CYBERPUNK ---
-COLOR_BG = (8, 12, 20)
-COLOR_PANEL = (15, 20, 30, 180)
-COLOR_NEON_CYAN = (0, 220, 255)
-COLOR_NEON_GREEN = (0, 255, 150)
-COLOR_NEON_RED = (255, 50, 50)
-COLOR_NEON_YELLOW = (255, 200, 0)
-COLOR_TEXT_DIM = (120, 140, 160)
-COLOR_TEXT_BRIGHT = (220, 230, 240)
-
-pygame.init()
-pygame.font.init()
-
-# Posicionamiento inicial
-os.environ['SDL_VIDEO_WINDOW_POS'] = "100,100"
-screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-pygame.display.set_caption("LEAN FX - ANALYTICS DASHBOARD")
-
-# Fuentes
-font_title = pygame.font.SysFont("Consolas", 32, bold=True)
-font_header = pygame.font.SysFont("Consolas", 24, bold=True)
-font_main = pygame.font.SysFont("Consolas", 18, bold=True)
-font_small = pygame.font.SysFont("Consolas", 14)
-font_huge = pygame.font.SysFont("Consolas", 48, bold=True)
-
-# --- ESTADO ---
-current_tab = 'DASHBOARD' # 'DASHBOARD', 'COMPARAR', 'EVOLUCIÓN', 'HISTORIAL', 'RECOMENDACIÓN'
-current_filter = 'hoy' # 'hoy', 'ayer', '3d', '7d', 'mes', 'custom'
-analytics_data = None
-comparison_data = None
-sessions_history = []
-selected_session = None
-best_time_data = None
-last_refresh = -REFRESH_INTERVAL_MS
-scroll_y = 0
-content_height = 1500 # Altura virtual inicial
-
-# Filtros para comparación
-comp_filter_1 = 'hoy'
-comp_filter_2 = 'ayer'
-comp_custom_1 = None
-comp_custom_2 = None
-
-# Pestañas
-TABS = ['DASHBOARD', 'COMPARAR', 'EVOLUCIÓN', 'HISTORIAL', 'RECOMENDACIÓN']
-
-# Fechas personalizadas (inicializadas a la última semana)
-custom_start_date = (datetime.now() - timedelta(days=7)).date()
-custom_end_date = datetime.now().date()
-date_editing = None # 'start' o 'end'
-
-# Filtros disponibles
-FILTERS = [
-    {'id': 'hoy', 'label': 'HOY'},
-    {'id': 'ayer', 'label': 'AYER'},
-    {'id': '3d', 'label': 'ÚLT. 3 DÍAS'},
-    {'id': '7d', 'label': 'ÚLT. 7 DÍAS'},
-    {'id': 'mes', 'label': 'ESTE MES'},
-    {'id': 'custom', 'label': 'PERSONALIZADO'}
-]
-
-def draw_neon_rect(surf, rect, color, width=2, glow=True, corners=False):
-    """Dibuja un rectángulo con efecto neón y esquinas opcionales"""
-    pygame.draw.rect(surf, color, rect, width, border_radius=4)
-    if glow:
-        for i in range(1, 3):
-            alpha = 80 // (i * 2)
-            glow_color = (*color[:3], alpha)
-            glow_rect = rect.inflate(i * 2, i * 2)
-            s = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-            pygame.draw.rect(s, glow_color, (0, 0, glow_rect.width, glow_rect.height), width, border_radius=4 + i)
-            surf.blit(s, glow_rect.topleft)
-    
-    if corners:
-        # Esquinas tipo bracket
-        l = 15
-        # Top Left
-        pygame.draw.line(surf, color, rect.topleft, (rect.x + l, rect.y), width + 1)
-        pygame.draw.line(surf, color, rect.topleft, (rect.x, rect.y + l), width + 1)
-        # Top Right
-        pygame.draw.line(surf, color, rect.topright, (rect.right - l, rect.y), width + 1)
-        pygame.draw.line(surf, color, rect.topright, (rect.right, rect.y + l), width + 1)
-        # Bottom Left
-        pygame.draw.line(surf, color, rect.bottomleft, (rect.x + l, rect.bottom), width + 1)
-        pygame.draw.line(surf, color, rect.bottomleft, (rect.x, rect.bottom - l), width + 1)
-        # Bottom Right
-        pygame.draw.line(surf, color, rect.bottomright, (rect.right - l, rect.bottom), width + 1)
-        pygame.draw.line(surf, color, rect.bottomright, (rect.right, rect.bottom - l), width + 1)
-
-def draw_stat_card(surf, x, y, w, h, label, value, color=COLOR_NEON_CYAN):
-    """Dibuja una tarjeta de estadística compacta y estilizada"""
-    card_rect = pygame.Rect(x, y, w, h)
-    
-    # Fondo translúcido con gradiente sutil
-    bg = pygame.Surface((w, h), pygame.SRCALPHA)
-    for i in range(h):
-        alpha = 40 + (i / h) * 40
-        pygame.draw.line(bg, (5, 15, 30, int(alpha)), (0, i), (w, i))
-    surf.blit(bg, (x, y))
-    
-    # Borde neón sutil y esquinas
-    draw_neon_rect(surf, card_rect, (*color, 120), 1, glow=True, corners=True)
-    
-    # Label (más pequeño y centrado arriba)
-    lbl_txt = font_small.render(label.upper(), True, COLOR_TEXT_DIM)
-    surf.blit(lbl_txt, (x + (w - lbl_txt.get_width()) // 2, y + 10))
-    
-    # Value (Grande y centrado)
-    val_txt = font_header.render(str(value), True, color)
-    surf.blit(val_txt, (x + (w - val_txt.get_width()) // 2, y + 35))
-
-def render_dashboard(target_surf):
-    global content_height
-    if not analytics_data and current_tab != 'RECOMENDACIÓN':
-        return
-
-    if current_tab == 'DASHBOARD':
-        render_main_dashboard(target_surf)
-    elif current_tab == 'COMPARAR':
-        render_comparison(target_surf)
-    elif current_tab == 'EVOLUCIÓN':
-        render_evolution(target_surf)
-    elif current_tab == 'HISTORIAL':
-        render_history(target_surf)
-    elif current_tab == 'RECOMENDACIÓN':
-        render_recommendation(target_surf)
-
-def render_main_dashboard(target_surf):
-    global content_height
-    summary = analytics_data['summary']
-    # --- 1. RESUMEN GENERAL (GRID COMPACTO) ---
-    start_y = 20
-    card_w, card_h = 180, 80 # Más pequeñas
-    gap_x, gap_y = 15, 15
-    grid_x = 50
-    
-    metrics = [
-        ("Sesiones", summary.get('sessions_count', 0), COLOR_NEON_CYAN),
-        ("Rondas", summary.get('rounds', 0), COLOR_NEON_GREEN),
-        ("Voters", summary.get('participants', 0), COLOR_NEON_YELLOW),
-        ("Pico Viewers", summary.get('max_peak', 0), COLOR_NEON_CYAN),
-        ("Avg Viewers", f"{summary.get('global_avg_viewers', 0) or 0:.1f}", COLOR_NEON_CYAN),
-        ("Total Likes", summary.get('likes', 0), COLOR_NEON_GREEN),
-        ("Mensajes", summary.get('messages', 0), COLOR_NEON_CYAN),
-        ("FXP Total", f"{int(summary.get('fxp', 0) or 0)}", COLOR_NEON_CYAN),
-    ]
-
-    dur_secs = summary.get('total_duration_secs', 0) or 0
-    dur_str = f"{dur_secs // 3600}h {(dur_secs % 3600) // 60}m"
-    metrics.append(("Tiempo", dur_str, COLOR_NEON_YELLOW))
-    metrics.append(("Eventos", len(analytics_data['events']), COLOR_NEON_RED))
-
-    # Dibujar métricas en grid de 6 columnas
-    cols = 6
-    for i, (lbl, val, col) in enumerate(metrics):
-        row = i // cols
-        col_idx = i % cols
-        draw_stat_card(target_surf, grid_x + col_idx * (card_w + gap_x), start_y + row * (card_h + gap_y), card_w, card_h, lbl, val, col)
-
-    start_y += (len(metrics) // cols + 1) * (card_h + gap_y) + 20
-    
-    # --- 2. SECCIONES DETALLADAS ---
-    
-    # Panel Votos y RR en la misma fila para ahorrar espacio
-    row_h = 180
-    panel_v_w = 400
-    
-    # Panel Votos
-    votos = analytics_data['votes']
-    sube = votos.get('SUBE', 0)
-    baja = votos.get('BAJA', 0)
-    total_v = sube + baja
-    
-    v_rect = pygame.Rect(grid_x, start_y, panel_v_w, row_h)
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), v_rect, border_radius=8)
-    draw_neon_rect(target_surf, v_rect, (0, 100, 120), 1, False, corners=True)
-    target_surf.blit(font_main.render("PARTICIPACIÓN", True, COLOR_NEON_CYAN), (grid_x + 20, start_y + 15))
-    
-    bar_x, bar_y, bar_w, bar_h = grid_x + 20, start_y + 80, panel_v_w - 40, 30
-    if total_v > 0:
-        pct_sube = sube / total_v
-        pygame.draw.rect(target_surf, COLOR_NEON_GREEN, (bar_x, bar_y, int(bar_w * pct_sube), bar_h), border_radius=4)
-        pygame.draw.rect(target_surf, COLOR_NEON_RED, (bar_x + int(bar_w * pct_sube), bar_y, bar_w - int(bar_w * pct_sube), bar_h), border_radius=4)
+class AnalyticsWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("LEAN FX - ANALYTICS HUD")
+        self.resize(1100, 700)
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: {COLOR_BG}; }}
+            QWidget {{ color: {COLOR_TEXT_BRIGHT}; font-family: 'Consolas'; }}
+        """)
         
-        s_txt = font_small.render(f"SUBE: {sube} ({int(pct_sube*100)}%)", True, COLOR_NEON_GREEN)
-        b_txt = font_small.render(f"BAJA: {baja} ({int((1-pct_sube)*100)}%)", True, COLOR_NEON_RED)
-        target_surf.blit(s_txt, (bar_x, bar_y - 20))
-        target_surf.blit(b_txt, (bar_x + bar_w - b_txt.get_width(), bar_y - 20))
-    else:
-        pygame.draw.rect(target_surf, (30, 40, 50), (bar_x, bar_y, bar_w, bar_h), border_radius=4)
-        target_surf.blit(font_small.render("SIN DATOS", True, COLOR_TEXT_DIM), (bar_x + bar_w//2 - 30, bar_y + 7))
-
-    # Panel RR Stats (Al lado de votos)
-    panel_rr_x = grid_x + panel_v_w + 20
-    panel_rr_w = WINDOW_W - panel_rr_x - 50
-    rr_rect = pygame.Rect(panel_rr_x, start_y, panel_rr_w, row_h)
-    
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), rr_rect, border_radius=8)
-    draw_neon_rect(target_surf, rr_rect, (0, 100, 120), 1, False, corners=True)
-    target_surf.blit(font_main.render("TOP R:R RATIOS", True, COLOR_NEON_CYAN), (panel_rr_x + 20, start_y + 15))
-    
-    rr_stats = analytics_data['rr_stats'][:4]
-    header_rr = font_small.render("RATIO      WINS    LOSSES    WR%", True, COLOR_TEXT_DIM)
-    target_surf.blit(header_rr, (panel_rr_x + 20, start_y + 45))
-    
-    for i, rr in enumerate(rr_stats):
-        ry = start_y + 70 + i * 22
-        total_rr = rr['wins'] + rr['losses']
-        wr = (rr['wins'] / total_rr * 100) if total_rr > 0 else 0
-        txt_rr = font_small.render(f"1:{rr['rr_ratio']:.1f}", True, COLOR_NEON_YELLOW)
-        txt_w = font_small.render(str(rr['wins']), True, COLOR_NEON_GREEN)
-        txt_l = font_small.render(str(rr['losses']), True, COLOR_NEON_RED)
-        txt_wr = font_small.render(f"{wr:.1f}%", True, COLOR_NEON_CYAN)
-        target_surf.blit(txt_rr, (panel_rr_x + 20, ry))
-        target_surf.blit(txt_w, (panel_rr_x + 100, ry))
-        target_surf.blit(txt_l, (panel_rr_x + 160, ry))
-        target_surf.blit(txt_wr, (panel_rr_x + 230, ry))
-
-    # --- 3. MEJOR HORARIO Y EVENTOS (Fila 2) ---
-    start_y += row_h + 20
-    
-    # Mejor Horario
-    h_rect = pygame.Rect(grid_x, start_y, panel_v_w, row_h)
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), h_rect, border_radius=8)
-    draw_neon_rect(target_surf, h_rect, (0, 100, 120), 1, False, corners=True)
-    target_surf.blit(font_main.render("MEJOR HORARIO", True, COLOR_NEON_YELLOW), (grid_x + 20, start_y + 15))
-    
-    best_hours = analytics_data.get('best_hours', [])[:5]
-    if best_hours:
-        for i, bh in enumerate(best_hours):
-            hy = start_y + 50 + i * 22
-            txt_h = font_small.render(f"{bh['hour']}:00 HS", True, COLOR_TEXT_BRIGHT)
-            txt_v = font_small.render(f"{bh['avg_viewers']:.1f} AVG", True, COLOR_NEON_CYAN)
-            target_surf.blit(txt_h, (grid_x + 20, hy))
-            target_surf.blit(txt_v, (grid_x + 150, hy))
-    else:
-        target_surf.blit(font_small.render("SIN DATOS", True, COLOR_TEXT_DIM), (grid_x + 20, start_y + 60))
-
-    # Eventos Activados
-    ev_rect = pygame.Rect(panel_rr_x, start_y, panel_rr_w, row_h)
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), ev_rect, border_radius=8)
-    draw_neon_rect(target_surf, ev_rect, (0, 100, 120), 1, False, corners=True)
-    target_surf.blit(font_main.render("EVENTOS", True, COLOR_NEON_RED), (panel_rr_x + 20, start_y + 15))
-    
-    events = analytics_data.get('events', [])
-    if events:
-        for i, ev in enumerate(events[:5]):
-            ey = start_y + 50 + i * 22
-            txt_en = font_small.render(ev['event_name'], True, COLOR_TEXT_BRIGHT)
-            txt_ec = font_small.render(f"x{ev['count']}", True, COLOR_NEON_RED)
-            target_surf.blit(txt_en, (panel_rr_x + 20, ey))
-            target_surf.blit(txt_ec, (panel_rr_x + panel_rr_w - 50, ey))
-    else:
-        target_surf.blit(font_small.render("NINGUNO", True, COLOR_TEXT_DIM), (panel_rr_x + 20, start_y + 60))
-
-    # --- 4. EVOLUCIÓN DIARIA (Fila 3) ---
-    start_y += row_h + 20
-    evolution = analytics_data['evolution']
-    panel_ev_w = WINDOW_W - 100
-    ev_chart_rect = pygame.Rect(grid_x, start_y, panel_ev_w, 200)
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), ev_chart_rect, border_radius=8)
-    draw_neon_rect(target_surf, ev_chart_rect, (0, 100, 120), 1, False, corners=True)
-    target_surf.blit(font_main.render("EVOLUCIÓN DE LIKES", True, COLOR_NEON_CYAN), (grid_x + 20, start_y + 15))
-    
-    chart_x, chart_y, chart_w, chart_h = grid_x + 50, start_y + 60, panel_ev_w - 100, 100
-    if evolution:
-        max_likes = max([d['likes'] for d in evolution]) if evolution else 1
-        if max_likes == 0: max_likes = 1
+        # Estado
+        self.current_filter = 'hoy'
+        self.analytics_data = None
         
-        if len(evolution) > 1:
-            points = []
-            for i, d in enumerate(evolution):
-                px = chart_x + (i * (chart_w / (len(evolution) - 1)))
-                py = chart_y + chart_h - (d['likes'] / max_likes * chart_h)
-                points.append((px, py))
+        self.init_ui()
+        self.refresh_data()
+        
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh_data)
+        self.timer.start(10000)
+
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+        
+        # 1. HEADER HUD
+        header_frame = QFrame()
+        header_frame.setStyleSheet(f"border-bottom: 2px solid {COLOR_NEON_CYAN}; margin-bottom: 5px;")
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(0, 0, 0, 5)
+        
+        title = QLabel("// LEAN FX ANALYTICS SYSTEM_v3.0")
+        title.setStyleSheet(f"color: {COLOR_NEON_CYAN}; font-size: 16pt; font-weight: bold; letter-spacing: 2px;")
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        self.lbl_status = QLabel("ONLINE")
+        self.lbl_status.setStyleSheet(f"color: {COLOR_NEON_GREEN}; font-weight: bold; font-size: 10pt;")
+        header_layout.addWidget(self.lbl_status)
+        
+        main_layout.addWidget(header_frame)
+        
+        # 2. TABS BAR (DASHBOARD, COMPARAR, etc.)
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid #1A2533; background: {COLOR_BG}; top: -1px; }}
+            QTabBar::tab {{ 
+                background: #0A0F19; color: {COLOR_TEXT_DIM}; padding: 6px 20px; 
+                border: 1px solid #1A2533; border-bottom: none; margin-right: 2px;
+                font-size: 9pt; font-weight: bold;
+            }}
+            QTabBar::tab:selected {{ 
+                background: #141E2D; color: {COLOR_NEON_CYAN}; 
+                border: 1px solid {COLOR_NEON_CYAN}; border-bottom: none;
+            }}
+            QTabBar::tab:hover {{ background: #1A2533; color: {COLOR_TEXT_BRIGHT}; }}
+        """)
+        
+        # 3. FILTERS BAR (Fixed top inside dashboard)
+        self.tab_dashboard = QWidget()
+        self.setup_dashboard_tab()
+        
+        self.tab_compare = QWidget()
+        self.setup_compare_tab()
+        
+        self.tab_evolution = QWidget()
+        self.setup_evolution_tab()
+        
+        self.tab_history = QWidget()
+        self.setup_history_tab()
+        
+        self.tabs.addTab(self.tab_dashboard, "DASHBOARD")
+        self.tabs.addTab(self.tab_compare, "COMPARAR")
+        self.tabs.addTab(self.tab_evolution, "EVOLUCIÓN")
+        self.tabs.addTab(self.tab_history, "HISTORIAL")
+        
+        main_layout.addWidget(self.tabs)
+
+    def setup_dashboard_tab(self):
+        layout = QVBoxLayout(self.tab_dashboard)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # Barra de Filtros (Fija arriba)
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(5)
+        
+        filters = [
+            ('HOY', 'hoy'), 
+            ('AYER', 'ayer'), 
+            ('7 DÍAS', '7d'), 
+            ('30 DÍAS', '30d'), 
+            ('TODO', 'all'),
+            ('PERSONALIZADO', 'custom')
+        ]
+        self.filter_buttons = {}
+        
+        for text, key in filters:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            if key == 'custom':
+                btn.setFixedWidth(120)
+            else:
+                btn.setFixedWidth(80)
+            btn.clicked.connect(lambda checked, k=key: self.change_filter(k))
+            btn.setStyleSheet(self.get_filter_btn_style(key == self.current_filter))
+            filter_bar.addWidget(btn)
+            self.filter_buttons[key] = btn
             
-            pygame.draw.lines(target_surf, COLOR_NEON_GREEN, False, points, 2)
-            for i, p in enumerate(points):
-                pygame.draw.circle(target_surf, COLOR_NEON_GREEN, (int(p[0]), int(p[1])), 4)
-                if i % max(1, len(evolution)//10) == 0:
-                    date_txt = font_small.render(evolution[i]['day'][5:], True, COLOR_TEXT_DIM)
-                    target_surf.blit(date_txt, (int(p[0]) - 15, chart_y + chart_h + 10))
-        else:
-            d = evolution[0]
-            pygame.draw.circle(target_surf, COLOR_NEON_GREEN, (chart_x + chart_w//2, chart_y + chart_h//2), 6)
-            target_surf.blit(font_small.render(f"Likes: {d['likes']}", True, COLOR_NEON_GREEN), (chart_x + chart_w//2 + 10, chart_y + chart_h//2 - 10))
-
-    content_height = start_y + 250
-    
-    # Botón Exportar al final del Dashboard
-    export_rect = pygame.Rect(grid_x, content_height - 40, 200, 35)
-    pygame.draw.rect(target_surf, (0, 60, 80), export_rect, border_radius=4)
-    draw_neon_rect(target_surf, export_rect, COLOR_NEON_CYAN, 1)
-    target_surf.blit(font_main.render("EXPORTAR CSV", True, COLOR_TEXT_BRIGHT), (export_rect.x + 35, export_rect.y + 7))
-
-def render_comparison(target_surf):
-    global content_height
-    start_y = 20
-    grid_x = 50
-    
-    target_surf.blit(font_header.render(f"COMPARACIÓN: {comp_filter_1.upper()} VS {comp_filter_2.upper()}", True, COLOR_NEON_CYAN), (grid_x, start_y))
-    start_y += 50
-    
-    if not comparison_data:
-        target_surf.blit(font_main.render("Cargando comparación...", True, COLOR_TEXT_DIM), (grid_x, start_y))
-        return
-
-    row_h = 45
-    for i, item in enumerate(comparison_data):
-        ry = start_y + i * (row_h + 10)
-        row_rect = pygame.Rect(grid_x, ry, WINDOW_W - 100, row_h)
-        pygame.draw.rect(target_surf, (15, 25, 40, 150), row_rect, border_radius=4)
+        filter_bar.addStretch()
         
-        # Label
-        target_surf.blit(font_main.render(item['label'], True, COLOR_TEXT_BRIGHT), (grid_x + 20, ry + 12))
+        btn_export = QPushButton("EXPORTAR CSV")
+        btn_export.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: 1px solid {COLOR_NEON_YELLOW}; color: {COLOR_NEON_YELLOW}; padding: 5px 15px; font-weight: bold; }}
+            QPushButton:hover {{ background: {COLOR_NEON_YELLOW}; color: black; }}
+        """)
+        btn_export.clicked.connect(self.export_current_data)
+        filter_bar.addWidget(btn_export)
         
-        # Valores
-        v1_str = f"{item['val1']:.1f}" if isinstance(item['val1'], float) else str(item['val1'])
-        v2_str = f"{item['val2']:.1f}" if isinstance(item['val2'], float) else str(item['val2'])
-        
-        target_surf.blit(font_main.render(v1_str, True, COLOR_NEON_CYAN), (grid_x + 300, ry + 12))
-        target_surf.blit(font_main.render("vs", True, COLOR_TEXT_DIM), (grid_x + 400, ry + 12))
-        target_surf.blit(font_main.render(v2_str, True, COLOR_TEXT_BRIGHT), (grid_x + 450, ry + 12))
-        
-        # Diferencia
-        diff_col = COLOR_NEON_GREEN if item['diff'] > 0 else (COLOR_NEON_RED if item['diff'] < 0 else COLOR_TEXT_DIM)
-        diff_sign = "+" if item['diff'] > 0 else ""
-        diff_str = f"{diff_sign}{item['diff']:.1f}" if isinstance(item['diff'], float) else f"{diff_sign}{item['diff']}"
-        target_surf.blit(font_main.render(diff_str, True, diff_col), (grid_x + 600, ry + 12))
-        
-        # Porcentaje
-        pct_str = f"{diff_sign}{item['pct']:.1f}%"
-        target_surf.blit(font_main.render(pct_str, True, diff_col), (grid_x + 750, ry + 12))
+        layout.addLayout(filter_bar)
 
-    content_height = start_y + len(comparison_data) * (row_h + 10) + 50
-
-def render_evolution(target_surf):
-    global content_height
-    start_y = 20
-    grid_x = 50
-    
-    evolution = analytics_data.get('evolution', [])
-    if not evolution:
-        target_surf.blit(font_main.render("No hay datos de evolución para este período.", True, COLOR_TEXT_DIM), (grid_x, start_y))
-        return
-
-    metrics = [
-        ('likes', 'EVOLUCIÓN DE LIKES', COLOR_NEON_CYAN),
-        ('sessions', 'EVOLUCIÓN DE SESIONES', COLOR_NEON_GREEN),
-        ('rounds', 'EVOLUCIÓN DE RONDAS', COLOR_NEON_YELLOW)
-    ]
-    
-    for i, (key, title, col) in enumerate(metrics):
-        chart_y = start_y + i * 250
-        chart_rect = pygame.Rect(grid_x, chart_y, WINDOW_W - 100, 200)
-        pygame.draw.rect(target_surf, (10, 20, 35, 150), chart_rect, border_radius=8)
-        draw_neon_rect(target_surf, chart_rect, (0, 100, 120), 1, False, corners=True)
-        target_surf.blit(font_main.render(title, True, col), (grid_x + 20, chart_y + 15))
+        # Barra de Fecha Personalizada (Nueva) - Ahora en un contenedor para toggle
+        self.custom_date_container = QWidget()
+        self.custom_date_container.setVisible(False)
+        custom_date_bar = QHBoxLayout(self.custom_date_container)
+        custom_date_bar.setContentsMargins(5, 0, 5, 5)
+        custom_date_bar.setSpacing(10)
         
-        cx, cy, cw, ch = grid_x + 60, chart_y + 60, WINDOW_W - 220, 100
-        max_val = max([d.get(key, 0) for d in evolution]) if evolution else 1
-        if max_val == 0: max_val = 1
+        lbl_desde = QLabel("DESDE")
+        lbl_desde.setFixedWidth(45)
+        lbl_desde.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 8pt; font-weight: bold;")
+        self.date_from = QDateEdit(QDate.currentDate().addDays(-7))
+        self.date_from.setCalendarPopup(True)
+        self.date_from.setFixedWidth(110)
+        self.date_from.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; color: {COLOR_NEON_CYAN}; padding: 3px;")
         
-        if len(evolution) > 1:
-            points = []
-            for j, d in enumerate(evolution):
-                px = cx + (j * (cw / (len(evolution) - 1)))
-                py = cy + ch - (d.get(key, 0) / max_val * ch)
-                points.append((px, py))
-            pygame.draw.lines(target_surf, col, False, points, 2)
-            for j, p in enumerate(points):
-                pygame.draw.circle(target_surf, col, (int(p[0]), int(p[1])), 4)
-                if j % max(1, len(evolution)//10) == 0:
-                    date_txt = font_small.render(evolution[j]['day'][5:], True, COLOR_TEXT_DIM)
-                    target_surf.blit(date_txt, (int(p[0]) - 15, cy + ch + 10))
-        else:
-            d = evolution[0]
-            pygame.draw.circle(target_surf, col, (cx + cw//2, cy + ch//2), 6)
-            target_surf.blit(font_small.render(f"{key.capitalize()}: {d.get(key, 0)}", True, col), (cx + cw//2 + 10, cy + ch//2 - 10))
-
-    content_height = start_y + len(metrics) * 250 + 50
-
-def render_history(target_surf):
-    global content_height
-    start_y = 20
-    grid_x = 50
-    
-    if selected_session:
-        render_session_details(target_surf)
-        return
-
-    target_surf.blit(font_header.render("HISTORIAL DE SESIONES", True, COLOR_NEON_CYAN), (grid_x, start_y))
-    start_y += 50
-    
-    header_rect = pygame.Rect(grid_x, start_y, WINDOW_W - 100, 40)
-    pygame.draw.rect(target_surf, (20, 40, 60), header_rect, border_radius=4)
-    
-    cols = [("FECHA", 20), ("DURACIÓN", 220), ("RONDAS", 350), ("MAX VIEWERS", 450), ("AVG VIEWERS", 600), ("FXP", 750)]
-    for txt, ox in cols:
-        target_surf.blit(font_small.render(txt, True, COLOR_TEXT_BRIGHT), (grid_x + ox, start_y + 12))
-    
-    start_y += 50
-    for i, s in enumerate(sessions_history):
-        ry = start_y + i * 45
-        row_rect = pygame.Rect(grid_x, ry, WINDOW_W - 100, 40)
-        is_hover = row_rect.collidepoint(pygame.mouse.get_pos()[0], pygame.mouse.get_pos()[1] - (230 + scroll_y)) # Ajuste manual de offset
+        lbl_hasta = QLabel("HASTA")
+        lbl_hasta.setFixedWidth(45)
+        lbl_hasta.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 8pt; font-weight: bold;")
+        self.date_to = QDateEdit(QDate.currentDate())
+        self.date_to.setCalendarPopup(True)
+        self.date_to.setFixedWidth(110)
+        self.date_to.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; color: {COLOR_NEON_CYAN}; padding: 3px;")
         
-        pygame.draw.rect(target_surf, (15, 30, 50) if is_hover else (10, 20, 35), row_rect, border_radius=4)
-        if is_hover:
-            pygame.draw.rect(target_surf, COLOR_NEON_CYAN, row_rect, 1, border_radius=4)
+        btn_apply = QPushButton("APLICAR FILTRO")
+        btn_apply.setFixedWidth(130)
+        btn_apply.setStyleSheet(f"""
+            QPushButton {{ background: #141E2D; border: 1px solid {COLOR_NEON_CYAN}; color: {COLOR_NEON_CYAN}; font-weight: bold; padding: 3px; }}
+            QPushButton:hover {{ background: {COLOR_NEON_CYAN}; color: black; }}
+        """)
+        btn_apply.clicked.connect(self.refresh_data)
+        
+        custom_date_bar.addWidget(lbl_desde)
+        custom_date_bar.addWidget(self.date_from)
+        custom_date_bar.addWidget(lbl_hasta)
+        custom_date_bar.addWidget(self.date_to)
+        custom_date_bar.addWidget(btn_apply)
+        custom_date_bar.addStretch()
+        
+        layout.addWidget(self.custom_date_container)
+
+        # 4. ÁREA DE DESPLAZAMIENTO PARA CONTENIDO
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setStyleSheet(f"""
+            QScrollArea {{ background-color: {COLOR_BG}; border: none; }}
+            QScrollBar:vertical {{
+                border: none; background: #0A0F19; width: 10px; margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {COLOR_NEON_CYAN}; min-height: 20px; border-radius: 5px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        """)
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet(f"background-color: {COLOR_BG};")
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(5, 5, 5, 5)
+        self.scroll_layout.setSpacing(15)
+
+        # Cuadrícula de Métricas Principales (Top 8)
+        self.metrics_grid = QGridLayout()
+        self.metrics_grid.setSpacing(8)
+        self.scroll_layout.addLayout(self.metrics_grid)
+
+        # Contenedores para nuevos paneles
+        self.panels_layout = QVBoxLayout()
+        self.panels_layout.setSpacing(15)
+        self.scroll_layout.addLayout(self.panels_layout)
+
+        self.scroll_layout.addStretch()
+        self.scroll.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll)
+
+    def get_filter_btn_style(self, active):
+        if active:
+            return f"background: {COLOR_NEON_CYAN}; color: black; border: 1px solid {COLOR_NEON_CYAN}; font-weight: bold; padding: 4px;"
+        return f"background: transparent; color: {COLOR_TEXT_DIM}; border: 1px solid #1A2533; padding: 4px;"
+
+    def change_filter(self, key):
+        self.current_filter = key
+        
+        # Mostrar/Ocultar barra de fechas personalizada
+        if hasattr(self, 'custom_date_container'):
+            self.custom_date_container.setVisible(key == 'custom')
             
-        dur = s['duration_secs']
-        dur_str = f"{dur//3600}h {(dur%3600)//60}m"
+        for k, btn in self.filter_buttons.items():
+            btn.setChecked(k == key)
+            btn.setStyleSheet(self.get_filter_btn_style(k == key))
+        self.refresh_data()
+
+    def setup_compare_tab(self):
+        layout = QVBoxLayout(self.tab_compare)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(10)
         
-        target_surf.blit(font_small.render(s['start_time'], True, COLOR_TEXT_BRIGHT), (grid_x + 20, ry + 12))
-        target_surf.blit(font_small.render(dur_str, True, COLOR_TEXT_DIM), (grid_x + 220, ry + 12))
-        target_surf.blit(font_small.render(str(s['rounds']), True, COLOR_NEON_GREEN), (grid_x + 350, ry + 12))
-        target_surf.blit(font_small.render(str(s['max_viewers']), True, COLOR_NEON_CYAN), (grid_x + 450, ry + 12))
-        target_surf.blit(font_small.render(f"{s['avg_viewers']:.1f}", True, COLOR_NEON_CYAN), (grid_x + 600, ry + 12))
-        target_surf.blit(font_small.render(f"{int(s['fxp'])}", True, COLOR_NEON_YELLOW), (grid_x + 750, ry + 12))
-
-    content_height = start_y + len(sessions_history) * 45 + 50
-
-def render_session_details(target_surf):
-    global content_height
-    start_y = 20
-    grid_x = 50
-    
-    # Botón Volver
-    back_rect = pygame.Rect(grid_x, start_y, 100, 30)
-    pygame.draw.rect(target_surf, (40, 50, 60), back_rect, border_radius=4)
-    target_surf.blit(font_small.render("< VOLVER", True, COLOR_TEXT_BRIGHT), (grid_x + 15, start_y + 7))
-    
-    # Botón Exportar Sesión
-    exp_rect = pygame.Rect(grid_x + 120, start_y, 150, 30)
-    pygame.draw.rect(target_surf, (0, 80, 60), exp_rect, border_radius=4)
-    target_surf.blit(font_small.render("EXPORTAR CSV", True, COLOR_TEXT_BRIGHT), (exp_rect.x + 25, exp_rect.y + 7))
-    
-    start_y += 50
-    s = selected_session['summary']
-    target_surf.blit(font_header.render(f"RESUMEN DE LIVE: {s['start_time']}", True, COLOR_NEON_CYAN), (grid_x, start_y))
-    start_y += 50
-    
-    # Grid de métricas de la sesión
-    metrics = [
-        ("Duración", f"{s['duration_secs']//3600}h {(s['duration_secs']%3600)//60}m", COLOR_NEON_YELLOW),
-        ("Rondas", s['total_rounds'], COLOR_NEON_GREEN),
-        ("Participantes", s['unique_participants_count'], COLOR_NEON_YELLOW),
-        ("Pico Viewers", s['peak_viewers'], COLOR_NEON_CYAN),
-        ("Avg Viewers", f"{(s['avg_viewers_sum'] / max(1, s['avg_viewers_count'])):.1f}", COLOR_NEON_CYAN),
-        ("Likes", s['total_likes'], COLOR_NEON_GREEN),
-        ("Mensajes", s['total_messages'], COLOR_NEON_CYAN),
-        ("FXP Repartido", int(s['fxp_distributed']), COLOR_NEON_CYAN),
-    ]
-    
-    card_w, card_h = 180, 80
-    cols = 4
-    for i, (lbl, val, col) in enumerate(metrics):
-        r, c = i // cols, i % cols
-        draw_stat_card(target_surf, grid_x + c * (card_w + 20), start_y + r * (card_h + 20), card_w, card_h, lbl, val, col)
-    
-    start_y += (len(metrics)//cols) * (card_h + 20) + 40
-    
-    # Votos y RR de la sesión
-    votos = selected_session['votes']
-    sube, baja = votos.get('SUBE', 0), votos.get('BAJA', 0)
-    total = sube + baja
-    
-    v_rect = pygame.Rect(grid_x, start_y, 400, 150)
-    pygame.draw.rect(target_surf, (10, 20, 35, 150), v_rect, border_radius=8)
-    target_surf.blit(font_main.render("VOTOS TOTALES", True, COLOR_NEON_CYAN), (grid_x + 20, start_y + 15))
-    
-    if total > 0:
-        bar_w = 360
-        pygame.draw.rect(target_surf, COLOR_NEON_GREEN, (grid_x + 20, start_y + 60, int(bar_w * (sube/total)), 30), border_radius=4)
-        pygame.draw.rect(target_surf, COLOR_NEON_RED, (grid_x + 20 + int(bar_w * (sube/total)), start_y + 60, bar_w - int(bar_w * (sube/total)), 30), border_radius=4)
-        target_surf.blit(font_small.render(f"SUBE: {sube}", True, COLOR_NEON_GREEN), (grid_x + 20, start_y + 100))
-        target_surf.blit(font_small.render(f"BAJA: {baja}", True, COLOR_NEON_RED), (grid_x + 300, start_y + 100))
-
-    # RR Stats de la sesión
-    rr_stats = selected_session['rr_stats']
-    if rr_stats:
-        rr_panel_x = grid_x + 450
-        rr_panel_w = WINDOW_W - rr_panel_x - 50
-        rr_rect = pygame.Rect(rr_panel_x, start_y, rr_panel_w, 150)
-        pygame.draw.rect(target_surf, (10, 20, 35, 150), rr_rect, border_radius=8)
-        target_surf.blit(font_main.render("RENDIMIENTO R:R", True, COLOR_NEON_CYAN), (rr_panel_x + 20, start_y + 15))
+        # Panel de Selectores (Compacto y Profesional)
+        selectors_frame = QFrame()
+        selectors_frame.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; border-radius: 4px;")
+        selectors_layout = QVBoxLayout(selectors_frame)
+        selectors_layout.setContentsMargins(15, 10, 15, 10)
+        selectors_layout.setSpacing(8)
         
-        header_rr = font_small.render("RATIO      WINS    LOSSES    WR%", True, COLOR_TEXT_DIM)
-        target_surf.blit(header_rr, (rr_panel_x + 20, start_y + 45))
+        # Contenedor horizontal para ambos períodos
+        periods_container = QHBoxLayout()
+        periods_container.setSpacing(20)
         
-        for i, rr in enumerate(rr_stats[:4]):
-            ry = start_y + 70 + i * 20
-            total_rr = rr['win_count'] + rr['loss_count']
-            wr = (rr['win_count'] / total_rr * 100) if total_rr > 0 else 0
-            txt_rr = font_small.render(f"1:{rr['rr_ratio']:.1f}", True, COLOR_NEON_YELLOW)
-            txt_w = font_small.render(str(rr['win_count']), True, COLOR_NEON_GREEN)
-            txt_l = font_small.render(str(rr['loss_count']), True, COLOR_NEON_RED)
-            txt_wr = font_small.render(f"{wr:.1f}%", True, COLOR_NEON_CYAN)
-            target_surf.blit(txt_rr, (rr_panel_x + 20, ry))
-            target_surf.blit(txt_w, (rr_panel_x + 100, ry))
-            target_surf.blit(txt_l, (rr_panel_x + 160, ry))
-            target_surf.blit(txt_wr, (rr_panel_x + 230, ry))
+        # --- PERÍODO A ---
+        period_a_layout = QVBoxLayout()
+        lbl_a = QLabel("PERÍODO A (REFERENCIA)")
+        lbl_a.setStyleSheet(f"color: {COLOR_NEON_CYAN}; font-weight: bold; font-size: 8pt; letter-spacing: 1px;")
+        period_a_layout.addWidget(lbl_a)
+        
+        dates_a = QHBoxLayout()
+        lbl_desde_a = QLabel("DESDE")
+        lbl_desde_a.setFixedWidth(45)
+        lbl_desde_a.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 7pt; font-weight: bold;")
+        self.date_a_from = QDateEdit(QDate.currentDate().addDays(-7))
+        self.date_a_from.setCalendarPopup(True)
+        self.date_a_from.setFixedHeight(25)
+        self.date_a_from.setFixedWidth(110)
+        self.date_a_from.setStyleSheet(f"background: #141E2D; border: 1px solid #1A2533; color: white; padding: 2px;")
+        
+        lbl_hasta_a = QLabel("HASTA")
+        lbl_hasta_a.setFixedWidth(45)
+        lbl_hasta_a.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 7pt; font-weight: bold;")
+        self.date_a_to = QDateEdit(QDate.currentDate())
+        self.date_a_to.setCalendarPopup(True)
+        self.date_a_to.setFixedHeight(25)
+        self.date_a_to.setFixedWidth(110)
+        self.date_a_to.setStyleSheet(f"background: #141E2D; border: 1px solid #1A2533; color: white; padding: 2px;")
+        
+        dates_a.addWidget(lbl_desde_a)
+        dates_a.addWidget(self.date_a_from)
+        dates_a.addSpacing(10)
+        dates_a.addWidget(lbl_hasta_a)
+        dates_a.addWidget(self.date_a_to)
+        dates_a.addStretch()
+        period_a_layout.addLayout(dates_a)
+        
+        # --- PERÍODO B ---
+        period_b_layout = QVBoxLayout()
+        lbl_b = QLabel("PERÍODO B (COMPARAR CON)")
+        lbl_b.setStyleSheet(f"color: {COLOR_NEON_YELLOW}; font-weight: bold; font-size: 8pt; letter-spacing: 1px;")
+        period_b_layout.addWidget(lbl_b)
+        
+        dates_b = QHBoxLayout()
+        lbl_desde_b = QLabel("DESDE")
+        lbl_desde_b.setFixedWidth(45)
+        lbl_desde_b.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 7pt; font-weight: bold;")
+        self.date_b_from = QDateEdit(QDate.currentDate().addDays(-14))
+        self.date_b_from.setCalendarPopup(True)
+        self.date_b_from.setFixedHeight(25)
+        self.date_b_from.setFixedWidth(110)
+        self.date_b_from.setStyleSheet(f"background: #141E2D; border: 1px solid #1A2533; color: white; padding: 2px;")
+        
+        lbl_hasta_b = QLabel("HASTA")
+        lbl_hasta_b.setFixedWidth(45)
+        lbl_hasta_b.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 7pt; font-weight: bold;")
+        self.date_b_to = QDateEdit(QDate.currentDate().addDays(-8))
+        self.date_b_to.setCalendarPopup(True)
+        self.date_b_to.setFixedHeight(25)
+        self.date_b_to.setFixedWidth(110)
+        self.date_b_to.setStyleSheet(f"background: #141E2D; border: 1px solid #1A2533; color: white; padding: 2px;")
+        
+        dates_b.addWidget(lbl_desde_b)
+        dates_b.addWidget(self.date_b_from)
+        dates_b.addSpacing(10)
+        dates_b.addWidget(lbl_hasta_b)
+        dates_b.addWidget(self.date_b_to)
+        dates_b.addStretch()
+        period_b_layout.addLayout(dates_b)
+        
+        periods_container.addLayout(period_a_layout)
+        periods_container.addLayout(period_b_layout)
 
-    content_height = start_y + 200
+        # Nota Informativa
+        lbl_info = QLabel(">> TIP: PARA COMPARAR UN DÍA ESPECÍFICO, SELECCIONA LA MISMA FECHA EN 'DESDE' Y 'HASTA'")
+        lbl_info.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 7pt; font-style: italic; letter-spacing: 1px; margin-top: 5px;")
+        
+        # Botón COMPARAR
+        self.btn_run_compare = QPushButton("EJECUTAR ANÁLISIS COMPARATIVO")
+        self.btn_run_compare.setFixedHeight(35)
+        self.btn_run_compare.setStyleSheet(f"""
+            QPushButton {{ 
+                background: #141E2D; color: {COLOR_NEON_CYAN}; font-weight: bold; 
+                border: 1px solid {COLOR_NEON_CYAN}; border-radius: 2px;
+                letter-spacing: 2px;
+            }}
+            QPushButton:hover {{ background: {COLOR_NEON_CYAN}; color: black; }}
+        """)
+        self.btn_run_compare.clicked.connect(self.refresh_comparison)
+        
+        selectors_layout.addLayout(periods_container)
+        selectors_layout.addWidget(lbl_info)
+        selectors_layout.addWidget(self.btn_run_compare)
+        
+        layout.addWidget(selectors_frame)
+        
+        # Área de resultados
+        self.scroll_compare = QScrollArea()
+        self.scroll_compare.setWidgetResizable(True)
+        self.scroll_compare.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_compare.setStyleSheet(f"background-color: {COLOR_BG}; border: none;")
+        
+        self.compare_content = QWidget()
+        self.compare_layout = QVBoxLayout(self.compare_content)
+        self.compare_layout.setContentsMargins(5, 5, 5, 5)
+        self.scroll_compare.setWidget(self.compare_content)
+        layout.addWidget(self.scroll_compare)
 
-def render_recommendation(target_surf):
-    global content_height
-    start_y = 20
-    grid_x = 50
-    
-    target_surf.blit(font_header.render("MEJOR HORARIO PARA HACER LIVE", True, COLOR_NEON_YELLOW), (grid_x, start_y))
-    start_y += 60
-    
-    if not best_time_data or isinstance(best_time_data, str):
-        msg = best_time_data if best_time_data else "Calculando recomendación..."
-        target_surf.blit(font_main.render(msg, True, COLOR_TEXT_DIM), (grid_x, start_y))
-        return
+    def setup_evolution_tab(self):
+        layout = QVBoxLayout(self.tab_evolution)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # 1. Barra de Filtros de Temporalidad
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(5)
+        
+        self.evolution_filter = 'diario'
+        evo_filters = [
+            ('DIARIO', 'diario'), 
+            ('SEMANAL', 'semanal'), 
+            ('MENSUAL', 'mensual'), 
+            ('PERSONALIZADO', 'custom')
+        ]
+        self.evo_filter_buttons = {}
+        
+        for text, key in evo_filters:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setFixedWidth(120 if key == 'custom' else 90)
+            btn.clicked.connect(lambda checked, k=key: self.change_evolution_filter(k))
+            btn.setStyleSheet(self.get_filter_btn_style(key == self.evolution_filter))
+            filter_bar.addWidget(btn)
+            self.evo_filter_buttons[key] = btn
+            
+        filter_bar.addStretch()
+        layout.addLayout(filter_bar)
 
-    # Banner de recomendación
-    rec_rect = pygame.Rect(grid_x, start_y, WINDOW_W - 100, 100)
-    pygame.draw.rect(target_surf, (20, 35, 60, 200), rec_rect, border_radius=10)
-    draw_neon_rect(target_surf, rec_rect, COLOR_NEON_YELLOW, 2, glow=True, corners=True)
-    
-    rec_txt = font_header.render(best_time_data['recommendation'], True, COLOR_TEXT_BRIGHT)
-    target_surf.blit(rec_txt, rec_txt.get_rect(center=rec_rect.center))
-    
-    start_y += 130
-    
-    # Detalles del análisis
-    details = [
-        ("Día Recomendado", best_time_data['best_day'], COLOR_NEON_YELLOW),
-        ("Hora Recomendada", best_time_data['best_hour'], COLOR_NEON_CYAN),
-        ("Avg Viewers Esperados", f"{best_time_data['avg_viewers']:.1f}", COLOR_NEON_GREEN),
-        ("Pico Viewers Histórico", best_time_data['peak_viewers'], COLOR_NEON_CYAN),
-    ]
-    
-    for i, (lbl, val, col) in enumerate(details):
-        ry = start_y + i * 40
-        target_surf.blit(font_main.render(lbl + ":", True, COLOR_TEXT_DIM), (grid_x, ry))
-        target_surf.blit(font_main.render(str(val), True, col), (grid_x + 350, ry))
+        # 2. Selector de fechas personalizado (Toggle)
+        self.evo_custom_date_container = QWidget()
+        self.evo_custom_date_container.setVisible(False)
+        evo_date_layout = QHBoxLayout(self.evo_custom_date_container)
+        evo_date_layout.setContentsMargins(5, 0, 5, 5)
+        evo_date_layout.setSpacing(10)
+        
+        lbl_desde = QLabel("DESDE")
+        lbl_desde.setFixedWidth(45)
+        lbl_desde.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 8pt; font-weight: bold;")
+        self.evo_date_from = QDateEdit(QDate.currentDate().addDays(-30))
+        self.evo_date_from.setCalendarPopup(True)
+        self.evo_date_from.setFixedWidth(110)
+        self.evo_date_from.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; color: {COLOR_NEON_CYAN}; padding: 3px;")
+        
+        lbl_hasta = QLabel("HASTA")
+        lbl_hasta.setFixedWidth(45)
+        lbl_hasta.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 8pt; font-weight: bold;")
+        self.evo_date_to = QDateEdit(QDate.currentDate())
+        self.evo_date_to.setCalendarPopup(True)
+        self.evo_date_to.setFixedWidth(110)
+        self.evo_date_to.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; color: {COLOR_NEON_CYAN}; padding: 3px;")
+        
+        btn_apply = QPushButton("APLICAR RANGO")
+        btn_apply.setFixedWidth(130)
+        btn_apply.setStyleSheet(f"""
+            QPushButton {{ background: #141E2D; border: 1px solid {COLOR_NEON_CYAN}; color: {COLOR_NEON_CYAN}; font-weight: bold; padding: 3px; }}
+            QPushButton:hover {{ background: {COLOR_NEON_CYAN}; color: black; }}
+        """)
+        btn_apply.clicked.connect(self.update_evolution)
+        
+        evo_date_layout.addWidget(lbl_desde)
+        evo_date_layout.addWidget(self.evo_date_from)
+        evo_date_layout.addWidget(lbl_hasta)
+        evo_date_layout.addWidget(self.evo_date_to)
+        evo_date_layout.addWidget(btn_apply)
+        evo_date_layout.addStretch()
+        
+        layout.addWidget(self.evo_custom_date_container)
+        
+        # 3. Área de Gráficos
+        self.scroll_evolution = QScrollArea()
+        self.scroll_evolution.setWidgetResizable(True)
+        self.scroll_evolution.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_evolution.setStyleSheet(f"background-color: {COLOR_BG}; border: none;")
+        
+        self.evolution_content = QWidget()
+        self.evolution_layout = QVBoxLayout(self.evolution_content)
+        self.evolution_layout.setContentsMargins(5, 5, 5, 5)
+        self.scroll_evolution.setWidget(self.evolution_content)
+        layout.addWidget(self.scroll_evolution)
 
-    content_height = start_y + 200
+    def change_evolution_filter(self, key):
+        self.evolution_filter = key
+        
+        # Toggle de barra de fechas
+        if hasattr(self, 'evo_custom_date_container'):
+            self.evo_custom_date_container.setVisible(key == 'custom')
+            
+        for k, btn in self.evo_filter_buttons.items():
+            btn.setChecked(k == key)
+            btn.setStyleSheet(self.get_filter_btn_style(k == key))
+            
+        self.update_evolution()
 
-clock = pygame.time.Clock()
-running = True
+    def setup_history_tab(self):
+        layout = QHBoxLayout(self.tab_history)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(10)
+        
+        # Lista de sesiones (Izquierda)
+        left_panel = QFrame()
+        left_panel.setFixedWidth(350)
+        left_panel.setStyleSheet(f"background: #0A0F19; border-right: 1px solid #1A2533;")
+        left_layout = QVBoxLayout(left_panel)
+        
+        left_layout.addWidget(self.create_section_header("HISTORIAL DE LIVES"))
+        
+        self.list_sessions = QListWidget()
+        self.list_sessions.setStyleSheet(f"""
+            QListWidget {{ background: transparent; border: none; }}
+            QListWidget::item {{ 
+                padding: 10px; border-bottom: 1px solid #141E2D; color: {COLOR_TEXT_DIM};
+            }}
+            QListWidget::item:selected {{ 
+                background: #141E2D; color: {COLOR_NEON_CYAN}; border-left: 3px solid {COLOR_NEON_CYAN};
+            }}
+        """)
+        self.list_sessions.itemClicked.connect(self.load_session_detail)
+        left_layout.addWidget(self.list_sessions)
+        
+        btn_export_history = QPushButton("EXPORTAR HISTORIAL")
+        btn_export_history.setStyleSheet(f"border: 1px solid {COLOR_NEON_YELLOW}; color: {COLOR_NEON_YELLOW}; padding: 5px;")
+        btn_export_history.clicked.connect(self.export_history_csv)
+        left_layout.addWidget(btn_export_history)
+        
+        layout.addWidget(left_panel)
+        
+        # Detalle de sesión (Derecha)
+        self.detail_panel = QScrollArea()
+        self.detail_panel.setWidgetResizable(True)
+        self.detail_panel.setFrameShape(QFrame.Shape.NoFrame)
+        self.detail_panel.setStyleSheet(f"background-color: {COLOR_BG}; border: none;")
+        
+        self.detail_content = QWidget()
+        self.detail_layout = QVBoxLayout(self.detail_content)
+        self.detail_panel.setWidget(self.detail_content)
+        
+        layout.addWidget(self.detail_panel)
 
-while running:
-    current_time = pygame.time.get_ticks()
-    mx, my = pygame.mouse.get_pos()
-    
-    # Eventos
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                if selected_session:
-                    selected_session = None
-                else:
-                    running = False
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1: # Click izquierdo
-                # --- Click en Pestañas ---
-                for i, tab in enumerate(TABS):
-                    tab_rect = pygame.Rect(50 + i * 180, 80, 175, 40)
-                    if tab_rect.collidepoint(mx, my):
-                        current_tab = tab
-                        scroll_y = 0
-                        last_refresh = -REFRESH_INTERVAL_MS # Forzar recarga
+    def refresh_comparison(self):
+        # Obtener rangos personalizados
+        start_a = self.date_a_from.date().toString("yyyy-MM-dd")
+        end_a = self.date_a_to.date().toString("yyyy-MM-dd")
+        
+        start_b = self.date_b_from.date().toString("yyyy-MM-dd")
+        end_b = self.date_b_to.date().toString("yyyy-MM-dd")
+        
+        data = get_comparison_data('custom', [start_a, end_a], 'custom', [start_b, end_b])
+        
+        # Limpiar
+        while self.compare_layout.count():
+            item = self.compare_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        header_text = f"COMPARACIÓN: [{start_a} a {end_a}] VS [{start_b} a {end_b}]"
+        self.compare_layout.addWidget(self.create_section_header(header_text))
+        
+        for m in data:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{ 
+                    background: #0A0F19; border: 1px solid #1A2533; 
+                    border-radius: 4px; margin-bottom: 2px;
+                }}
+            """)
+            l = QHBoxLayout(card)
+            l.setContentsMargins(15, 10, 15, 10)
+            
+            lbl_name = QLabel(m['label'].upper())
+            lbl_name.setStyleSheet(f"color: {COLOR_TEXT_BRIGHT}; font-weight: bold; font-size: 9pt; letter-spacing: 1px;")
+            
+            # Formatear valores según tipo (fxp, tiempo, etc.)
+            v1, v2 = m['val1'], m['val2']
+            if 'FXP' in m['label']:
+                val_str = f"{int(v1)} vs {int(v2)}"
+            elif 'Promedio' in m['label']:
+                val_str = f"{v1:.1f} vs {v2:.1f}"
+            else:
+                val_str = f"{v1} vs {v2}"
                 
-                # --- Click en Filtros (Solo Dashboard y Evolución) ---
-                if current_tab in ['DASHBOARD', 'EVOLUCIÓN']:
-                    for i, f in enumerate(FILTERS):
-                        f_rect = pygame.Rect(50 + i * 165, 130, 160, 40)
-                        if f_rect.collidepoint(mx, my):
-                            current_filter = f['id']
-                            if current_filter != 'custom':
-                                last_refresh = -REFRESH_INTERVAL_MS
-                            scroll_y = 0
+            vals = QLabel(val_str)
+            vals.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-family: 'Consolas'; font-size: 9pt;")
+            
+            diff = m['diff']
+            pct = m['pct']
+            
+            # Estilo de diferencia
+            if diff > 0:
+                col = COLOR_NEON_GREEN
+                prefix = "+"
+                arrow = "▲"
+            elif diff < 0:
+                col = COLOR_NEON_RED
+                prefix = ""
+                arrow = "▼"
+            else:
+                col = COLOR_TEXT_DIM
+                prefix = ""
+                arrow = "="
+            
+            # Formatear diferencia numérica
+            if 'FXP' in m['label']:
+                diff_str = f"{prefix}{int(diff)}"
+            elif 'Promedio' in m['label']:
+                diff_str = f"{prefix}{diff:.1f}"
+            else:
+                diff_str = f"{prefix}{diff}"
                 
-                # --- Click en Historial ---
-                if current_tab == 'HISTORIAL':
-                    if selected_session:
-                        # Botón Volver
-                        header_h = 130
-                        if pygame.Rect(50, 20 + header_h + scroll_y, 100, 30).collidepoint(mx, my):
-                            selected_session = None
-                        # Botón Exportar Sesión
-                        elif pygame.Rect(170, 20 + header_h + scroll_y, 150, 30).collidepoint(mx, my):
-                            export_session_to_csv(selected_session)
-                    else:
-                        # Click en fila de historial
-                        header_h = 130
-                        start_y_h = 20 + 100 + header_h + scroll_y
-                        for i, s in enumerate(sessions_history):
-                            if pygame.Rect(50, start_y_h + i * 45, WINDOW_W - 100, 40).collidepoint(mx, my):
-                                selected_session = get_session_details(s['id'])
-                                scroll_y = 0
+            lbl_diff = QLabel(f"{arrow} {diff_str} ({prefix}{pct:.1f}%)")
+            lbl_diff.setStyleSheet(f"color: {col}; font-weight: bold; font-family: 'Consolas'; font-size: 10pt;")
+            
+            l.addWidget(lbl_name)
+            l.addStretch()
+            l.addWidget(vals)
+            l.addSpacing(30)
+            l.addWidget(lbl_diff)
+            
+            self.compare_layout.addWidget(card)
+        
+        self.compare_layout.addStretch()
+        self.lbl_status.setText("ANÁLISIS COMPLETADO")
+
+    def update_evolution(self):
+        if not self.analytics_data: return
+        evolution = self.analytics_data.get('evolution', [])
+        
+        # Limpiar
+        while self.evolution_layout.count():
+            item = self.evolution_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        if not evolution:
+            self.evolution_layout.addWidget(QLabel("SIN DATOS HISTÓRICOS SUFICIENTES"), alignment=Qt.AlignmentFlag.AlignCenter)
+            return
+
+        # --- Lógica de Agrupación ---
+        processed_data = []
+        filter_type = getattr(self, 'evolution_filter', 'diario')
+        
+        if filter_type == 'diario' or filter_type == 'custom':
+            processed_data = evolution
+        else:
+            # Agrupar por Semana o Mes
+            groups = {}
+            for d in evolution:
+                dt = datetime.strptime(d['day'], '%Y-%m-%d')
+                if filter_type == 'semanal':
+                    # Usar el lunes de esa semana como etiqueta
+                    key = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+                else: # mensual
+                    key = dt.strftime('%Y-%m-01')
                 
-                # --- Click en Dashboard (Exportar) ---
-                if current_tab == 'DASHBOARD':
-                    header_h = 230 if current_filter == 'custom' else 180
-                    export_rect = pygame.Rect(50, content_height - 40 + header_h + scroll_y, 200, 35)
-                    if export_rect.collidepoint(mx, my):
-                        export_period_to_csv(analytics_data, current_filter)
+                if key not in groups:
+                    groups[key] = {
+                        'day': key, 
+                        'sessions': 0, 'likes': 0, 'rounds': 0, 
+                        'max_peak': 0, 'avg_viewers_sum': 0, 'avg_viewers_count': 0,
+                        'messages': 0, 'participants': 0, 'fxp': 0
+                    }
+                
+                g = groups[key]
+                g['sessions'] += d.get('sessions', 1)
+                g['likes'] += d['likes']
+                g['rounds'] += d['rounds']
+                g['max_peak'] = max(g['max_peak'], d['max_peak'])
+                g['avg_viewers_sum'] += d.get('avg_viewers', 0)
+                g['avg_viewers_count'] += 1
+                g['messages'] += d['messages']
+                g['participants'] += d['participants']
+                g['fxp'] += d['fxp']
+            
+            # Convertir a lista y calcular promedios
+            for key in sorted(groups.keys()):
+                g = groups[key]
+                g['avg_viewers'] = g['avg_viewers_sum'] / max(1, g['avg_viewers_count'])
+                processed_data.append(g)
 
-                # --- Click en Controles Custom ---
-                if current_tab in ['DASHBOARD', 'EVOLUCIÓN'] and current_filter == 'custom':
-                    # Botones Start
-                    start_rect = pygame.Rect(120, 180, 250, 35)
-                    btn_s_m = pygame.Rect(start_rect.right + 5, 180, 35, 35)
-                    btn_s_p = pygame.Rect(start_rect.right + 45, 180, 35, 35)
-                    btn_s_mm = pygame.Rect(start_rect.right + 85, 180, 35, 35)
-                    btn_s_pp = pygame.Rect(start_rect.right + 125, 180, 35, 35)
-                    
-                    if btn_s_m.collidepoint(mx, my):
-                        custom_start_date -= timedelta(days=1)
-                    elif btn_s_p.collidepoint(mx, my):
-                        custom_start_date += timedelta(days=1)
-                    elif btn_s_mm.collidepoint(mx, my):
-                        custom_start_date -= timedelta(days=30)
-                    elif btn_s_pp.collidepoint(mx, my):
-                        custom_start_date += timedelta(days=30)
-                    
-                    if custom_start_date > custom_end_date:
-                        custom_start_date = custom_end_date
-                    
-                    # Botones End
-                    end_rect = pygame.Rect(WINDOW_W // 2 + 80, 180, 200, 35)
-                    btn_e_m = pygame.Rect(end_rect.right + 5, 180, 35, 35)
-                    btn_e_p = pygame.Rect(end_rect.right + 45, 180, 35, 35)
-                    btn_e_mm = pygame.Rect(end_rect.right + 85, 180, 35, 35)
-                    btn_e_pp = pygame.Rect(end_rect.right + 125, 180, 35, 35)
-                    
-                    if btn_e_m.collidepoint(mx, my):
-                        custom_end_date -= timedelta(days=1)
-                    elif btn_e_p.collidepoint(mx, my):
-                        custom_end_date += timedelta(days=1)
-                    elif btn_e_mm.collidepoint(mx, my):
-                        custom_end_date -= timedelta(days=30)
-                    elif btn_e_pp.collidepoint(mx, my):
-                        custom_end_date += timedelta(days=30)
+        # 1. Crear Figure de Matplotlib
+        fig = Figure(figsize=(10, 8), dpi=100)
+        fig.patch.set_facecolor(COLOR_BG)
+        canvas = FigureCanvas(fig)
+        canvas.setStyleSheet(f"background-color: {COLOR_BG};")
+        
+        # Ajustar espaciado
+        fig.subplots_adjust(hspace=0.4, wspace=0.3, top=0.9, bottom=0.1)
+        
+        # Datos para graficar
+        days = [d['day'] for d in processed_data]
+        viewers = [d['max_peak'] for d in processed_data]
+        likes = [d['likes'] for d in processed_data]
+        participants = [d['participants'] for d in processed_data]
+        fxp = [d['fxp'] for d in processed_data]
+        
+        metrics = [
+            (viewers, "VIEWERS (PICO)", COLOR_NEON_CYAN),
+            (likes, "LIKES", COLOR_NEON_RED),
+            (participants, "PARTICIPANTES", COLOR_NEON_YELLOW),
+            (fxp, "FXP DISTRIBUIDO", COLOR_NEON_GREEN)
+        ]
+        
+        for i, (data, title, color) in enumerate(metrics):
+            ax = fig.add_subplot(2, 2, i + 1)
+            ax.set_facecolor("#0A0F19")
+            
+            # Línea y puntos
+            ax.plot(days, data, color=color, linewidth=2, marker='o', markersize=4, markerfacecolor=color, markeredgecolor='white')
+            ax.fill_between(days, data, color=color, alpha=0.1)
+            
+            # Estilo de ejes
+            ax.set_title(title, color=color, fontsize=10, fontweight='bold', pad=10)
+            ax.tick_params(axis='x', colors=COLOR_TEXT_DIM, labelsize=7, rotation=45)
+            ax.tick_params(axis='y', colors=COLOR_TEXT_DIM, labelsize=7)
+            
+            for spine in ax.spines.values():
+                spine.set_color("#1A2533")
+            
+            ax.grid(True, linestyle='--', alpha=0.1, color=COLOR_TEXT_DIM)
+            
+        self.evolution_layout.addWidget(canvas)
+        
+        # Tabla debajo
+        title_table = "TABLA DE DATOS (" + filter_type.upper() + ")"
+        self.evolution_layout.addWidget(self.create_section_header(title_table))
+        
+        header_row = QFrame()
+        header_row.setStyleSheet("background: #141E2D; font-weight: bold;")
+        h_layout = QHBoxLayout(header_row)
+        cols = ["PERÍODO", "VIEWERS", "LIKES", "VOTERS", "FXP"]
+        for c in cols:
+            lbl = QLabel(c)
+            lbl.setStyleSheet(f"color: {COLOR_NEON_CYAN}; font-size: 8pt;")
+            h_layout.addWidget(lbl)
+        self.evolution_layout.addWidget(header_row)
+        
+        # Mostrar los últimos 15 períodos procesados
+        for day in reversed(processed_data[-15:]):
+            row = QFrame()
+            row.setStyleSheet("border-bottom: 1px solid #1A2533;")
+            r_layout = QHBoxLayout(row)
+            
+            r_layout.addWidget(QLabel(day['day']))
+            r_layout.addWidget(QLabel(str(day['max_peak'])))
+            r_layout.addWidget(QLabel(str(day['likes'])))
+            r_layout.addWidget(QLabel(str(day['participants'])))
+            r_layout.addWidget(QLabel(str(int(day['fxp']))))
+            
+            self.evolution_layout.addWidget(row)
+        
+        self.evolution_layout.addStretch()
 
-                    if custom_end_date < custom_start_date:
-                        custom_end_date = custom_start_date
-                    
-                    # Botón Aplicar
-                    btn_apply = pygame.Rect(WINDOW_W - 180, 180, 130, 35)
-                    if btn_apply.collidepoint(mx, my):
-                        last_refresh = -REFRESH_INTERVAL_MS
+    def update_history_list(self):
+        history = get_sessions_history(30)
+        self.list_sessions.clear()
+        
+        for s in history:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, s['id'])
+            
+            date_str = s['start_time'].split('.')[0]
+            item.setText(f"SESIÓN #{s['id']} - {date_str}\n{s['rounds']} RONDAS | {s['max_viewers']} PEAK")
+            self.list_sessions.addItem(item)
 
-            elif event.button == 4: # Scroll Up
-                scroll_y = min(0, scroll_y + 40)
-            elif event.button == 5: # Scroll Down
-                header_h = 230 if current_tab in ['DASHBOARD', 'EVOLUCIÓN'] and current_filter == 'custom' else (180 if current_tab in ['DASHBOARD', 'EVOLUCIÓN'] else 130)
-                scroll_y = max(-(content_height - (WINDOW_H - header_h)), scroll_y - 40)
+    def load_session_detail(self, item):
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        details = get_session_details(session_id)
+        if not details: return
+        
+        # Optimización: Desactivar actualizaciones visuales durante la reconstrucción
+        self.detail_panel.setUpdatesEnabled(False)
+        
+        # Limpiar detalle
+        while self.detail_layout.count():
+            item = self.detail_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    si = item.layout().takeAt(0)
+                    if si.widget(): si.widget().deleteLater()
 
-    # Refrescar datos
-    if current_time - last_refresh >= REFRESH_INTERVAL_MS:
+        summary = details['summary']
+        
+        # Cabecera de detalle
+        header = QHBoxLayout()
+        title = QLabel(f"// DETALLE SESIÓN #{session_id}")
+        title.setStyleSheet(f"color: {COLOR_NEON_CYAN}; font-size: 14pt; font-weight: bold;")
+        header.addWidget(title)
+        header.addStretch()
+        
+        btn_exp = QPushButton("EXPORTAR SESIÓN")
+        btn_exp.setStyleSheet(f"""
+            QPushButton {{ border: 1px solid {COLOR_NEON_YELLOW}; color: {COLOR_NEON_YELLOW}; padding: 5px 15px; font-weight: bold; background: transparent; }}
+            QPushButton:hover {{ background: {COLOR_NEON_YELLOW}; color: black; }}
+        """)
+        btn_exp.clicked.connect(lambda: self.export_session_csv(details))
+        header.addWidget(btn_exp)
+        self.detail_layout.addLayout(header)
+        
+        # Grid de métricas de la sesión
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        
+        # Formatear duración
+        dur_secs = summary.get('duration_secs', 0) or 0
+        h = dur_secs // 3600
+        m = (dur_secs % 3600) // 60
+        s = dur_secs % 60
+        duration_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+
+        metrics = [
+            ("INICIO", summary['start_time'], COLOR_TEXT_BRIGHT),
+            ("FIN", summary['end_time'] or "N/A", COLOR_TEXT_BRIGHT),
+            ("DURACIÓN", duration_str, COLOR_NEON_GREEN),
+            ("RONDAS", summary['total_rounds'], COLOR_NEON_GREEN),
+            ("VIEWERS PICO", summary['peak_viewers'], COLOR_NEON_CYAN),
+            ("LIKES", summary['total_likes'], COLOR_NEON_RED),
+            ("FXP TOTAL", int(summary['fxp_distributed'] or 0), COLOR_NEON_YELLOW),
+            ("PARTICIPANTES", summary['unique_participants_count'], COLOR_NEON_CYAN),
+            ("MENSAJES", summary['total_messages'], COLOR_NEON_YELLOW),
+        ]
+        
+        for i, (l, v, c) in enumerate(metrics):
+            card = self.create_stat_card(l, v, c)
+            card.setFixedHeight(70)
+            grid.addWidget(card, i // 3, i % 3)
+        
+        self.detail_layout.addLayout(grid)
+        
+        # Votos y eventos (estilo HUD)
+        votes = details.get('votes', {})
+        sube = votes.get('SUBE', 0)
+        baja = votes.get('BAJA', 0)
+        total_v = sube + baja
+        
+        self.detail_layout.addWidget(self.create_section_header("PARTICIPACIÓN EN ESTA SESIÓN"))
+        
+        vote_frame = QFrame()
+        vote_frame.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; padding: 10px;")
+        v_layout = QHBoxLayout(vote_frame)
+        
+        lbl_v = QLabel(f"TOTAL VOTOS: {total_v}  |  SUBE: {sube}  |  BAJA: {baja}")
+        lbl_v.setStyleSheet(f"color: {COLOR_TEXT_BRIGHT}; font-weight: bold;")
+        v_layout.addWidget(lbl_v)
+        self.detail_layout.addWidget(vote_frame)
+        
+        # Eventos
+        events = details.get('events', [])
+        if events:
+            self.detail_layout.addWidget(self.create_section_header("LÍNEA DE TIEMPO DE EVENTOS"))
+            ev_scroll = QScrollArea()
+            ev_scroll.setWidgetResizable(True)
+            ev_scroll.setFixedHeight(150)
+            ev_scroll.setStyleSheet("background: transparent; border: none;")
+            ev_cont = QWidget()
+            ev_lay = QVBoxLayout(ev_cont)
+            for ev in events:
+                e_row = QLabel(f"[{ev.get('timestamp', '')}] >> {ev.get('event_name', '')}")
+                e_row.setStyleSheet(f"color: {COLOR_NEON_YELLOW}; font-size: 8pt; font-family: 'Consolas';")
+                ev_lay.addWidget(e_row)
+            ev_lay.addStretch()
+            ev_scroll.setWidget(ev_cont)
+            self.detail_layout.addWidget(ev_scroll)
+        
+        self.detail_layout.addStretch()
+        
+        # Reactivar actualizaciones
+        self.detail_panel.setUpdatesEnabled(True)
+        self.detail_panel.verticalScrollBar().setValue(0)
+
+    def export_session_csv(self, details):
+        path = export_session_to_csv(details)
+        if path: self.lbl_status.setText(f"EXPORTADO: {os.path.basename(path)}")
+
+    def export_history_csv(self):
+        history = get_sessions_history(100)
+        path = export_history_to_csv(history)
+        if path: self.lbl_status.setText(f"EXPORTADO: {os.path.basename(path)}")
+
+    def update_dashboard(self):
+        if not self.analytics_data: return
+        
+        # 1. Limpiar Grid de Métricas Principales
+        while self.metrics_grid.count():
+            item = self.metrics_grid.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        # 2. Limpiar Paneles Inferiores
+        while self.panels_layout.count():
+            item = self.panels_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            elif item.layout():
+                # Limpiar sub-layouts
+                while item.layout().count():
+                    sub_item = item.layout().takeAt(0)
+                    if sub_item.widget(): sub_item.widget().deleteLater()
+            
+        summary = self.analytics_data.get('summary', {})
+        
+        # Formatear duración
+        dur_secs = summary.get('total_duration_secs', 0) or 0
+        h = dur_secs // 3600
+        m = (dur_secs % 3600) // 60
+        s = dur_secs % 60
+        duration_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+        
+        # 8 métricas solicitadas
+        metrics = [
+            ("SESIONES", summary.get('sessions_count', 0), COLOR_NEON_CYAN),
+            ("RONDAS", summary.get('rounds', 0), COLOR_NEON_GREEN),
+            ("VOTERS", summary.get('participants', 0), COLOR_NEON_YELLOW),
+            ("PICO VIEWERS", summary.get('max_peak', 0), COLOR_NEON_CYAN),
+            ("AVG VIEWERS", round(summary.get('global_avg_viewers', 0) or 0, 1), COLOR_NEON_CYAN),
+            ("LIKES", summary.get('likes', 0), COLOR_NEON_RED),
+            ("TOTAL FXP", int(summary.get('fxp', 0) or 0), COLOR_NEON_YELLOW),
+            ("TIEMPO TOTAL", duration_str, COLOR_NEON_GREEN)
+        ]
+        
+        for i, (lbl, val, col) in enumerate(metrics):
+            card = self.create_stat_card(lbl, val, col)
+            self.metrics_grid.addWidget(card, i // 4, i % 4)
+
+        # 3. Integrar Bloques Analíticos Inferiores
+        self.add_participation_block()
+        
+        # Fila para R:R y Horarios (Lado a lado)
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(15)
+        
+        rr_block = self.create_rr_block()
+        hours_block = self.create_hours_block()
+        
+        row2_layout.addWidget(rr_block, 1)
+        row2_layout.addWidget(hours_block, 1)
+        self.panels_layout.addLayout(row2_layout)
+        
+        # Eventos
+        self.add_events_block()
+        
+        # 4. Añadir Tarjetas de Análisis de Horarios y Mejores Métricas (Sección Solicitada)
+        self.add_key_metrics_analysis()
+
+    def add_key_metrics_analysis(self):
+        self.panels_layout.addWidget(self.create_section_header("ANÁLISIS DE MEJORES MÉTRICAS HISTÓRICAS"))
+        
+        container = QFrame()
+        container.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533;")
+        layout = QGridLayout(container)
+        layout.setSpacing(10)
+        
+        # Obtener análisis de horarios desde DB
+        best_time = get_best_time_analysis()
+        summary = self.analytics_data.get('summary', {})
+        
+        # Si best_time es string, no hay datos
+        best_day = best_time.get('best_day', 'N/A') if isinstance(best_time, dict) else 'N/A'
+        best_hour = best_time.get('best_hour', 'N/A') if isinstance(best_time, dict) else 'N/A'
+        
+        analysis_metrics = [
+            ("MEJOR DÍA", best_day, COLOR_NEON_CYAN),
+            ("MEJOR HORARIO", best_hour, COLOR_NEON_GREEN),
+            ("MÁX PICO", summary.get('max_peak', 0), COLOR_NEON_CYAN),
+            ("AVG MÁXIMA", round(summary.get('global_avg_viewers', 0) or 0, 1), COLOR_NEON_CYAN),
+            ("PARTICIPACIÓN CHAT", f"{summary.get('messages', 0)} MSG", COLOR_NEON_YELLOW)
+        ]
+        
+        for i, (lbl, val, col) in enumerate(analysis_metrics):
+            card = self.create_stat_card(lbl, val, col)
+            card.setFixedHeight(70)
+            layout.addWidget(card, 0, i)
+            
+        self.panels_layout.addWidget(container)
+
+    def create_section_header(self, title):
+        lbl = QLabel(f"// {title}")
+        lbl.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 9pt; font-weight: bold; margin-top: 5px;")
+        return lbl
+
+    def add_participation_block(self):
+        self.panels_layout.addWidget(self.create_section_header("PARTICIPACIÓN: SUBE vs BAJA"))
+        
+        votes = self.analytics_data.get('votes', {})
+        sube = votes.get('SUBE', 0)
+        baja = votes.get('BAJA', 0)
+        total = sube + baja
+        
+        pct_sube = (sube / total * 100) if total > 0 else 50
+        pct_baja = (baja / total * 100) if total > 0 else 50
+        
+        container = QFrame()
+        container.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; border-radius: 4px;")
+        layout = QVBoxLayout(container)
+        
+        # Barra de progreso visual
+        bar_layout = QHBoxLayout()
+        bar_layout.setSpacing(0)
+        
+        lbl_sube = QLabel(f"SUBE {sube} ({pct_sube:.1f}%)")
+        lbl_sube.setStyleSheet(f"color: {COLOR_NEON_GREEN}; font-weight: bold; padding: 10px;")
+        
+        lbl_baja = QLabel(f"BAJA {baja} ({pct_baja:.1f}%)")
+        lbl_baja.setStyleSheet(f"color: {COLOR_NEON_RED}; font-weight: bold; padding: 10px;")
+        
+        bar_layout.addWidget(lbl_sube)
+        bar_layout.addStretch()
+        bar_layout.addWidget(lbl_baja)
+        layout.addLayout(bar_layout)
+        
+        # Barra gráfica simple
+        graph_bar = QFrame()
+        graph_bar.setFixedHeight(8)
+        graph_bar_layout = QHBoxLayout(graph_bar)
+        graph_bar_layout.setContentsMargins(0, 0, 0, 0)
+        graph_bar_layout.setSpacing(0)
+        
+        part_sube = QFrame()
+        part_sube.setStyleSheet(f"background: {COLOR_NEON_GREEN}; border: none;")
+        
+        part_baja = QFrame()
+        part_baja.setStyleSheet(f"background: {COLOR_NEON_RED}; border: none;")
+        
+        graph_bar_layout.addWidget(part_sube, max(1, int(pct_sube)))
+        graph_bar_layout.addWidget(part_baja, max(1, int(pct_baja)))
+        
+        layout.addWidget(graph_bar)
+        self.panels_layout.addWidget(container)
+
+    def create_rr_block(self):
+        container = QFrame()
+        container.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; border-left: 2px solid {COLOR_NEON_CYAN};")
+        layout = QVBoxLayout(container)
+        
+        layout.addWidget(self.create_section_header("TOP R:R RATIOS (RENDIMIENTO)"))
+        
+        rr_stats = self.analytics_data.get('rr_stats', [])[:5] # Top 5
+        
+        if not rr_stats:
+            layout.addWidget(QLabel("SIN DATOS DE TRADES"), alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            for rr in rr_stats:
+                ratio = rr.get('rr_ratio', 0)
+                wins = rr.get('wins', 0)
+                losses = rr.get('losses', 0)
+                total = wins + losses
+                wr = (wins / total * 100) if total > 0 else 0
+                
+                row = QFrame()
+                row.setStyleSheet("border: none; background: transparent; border-bottom: 1px solid #141E2D;")
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 5, 0, 5)
+                
+                lbl_ratio = QLabel(f"RR 1:{ratio}")
+                lbl_ratio.setStyleSheet(f"color: {COLOR_NEON_CYAN}; font-weight: bold;")
+                
+                lbl_stats = QLabel(f"WR: {wr:.1f}% ({wins}W / {losses}L)")
+                lbl_stats.setStyleSheet(f"color: {COLOR_TEXT_BRIGHT}; font-size: 8pt;")
+                
+                row_layout.addWidget(lbl_ratio)
+                row_layout.addStretch()
+                row_layout.addWidget(lbl_stats)
+                layout.addWidget(row)
+        
+        return container
+
+    def create_hours_block(self):
+        container = QFrame()
+        container.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533; border-left: 2px solid {COLOR_NEON_GREEN};")
+        layout = QVBoxLayout(container)
+        
+        layout.addWidget(self.create_section_header("MEJOR HORARIO Y RENDIMIENTO"))
+        
+        best_hours = self.analytics_data.get('best_hours', [])[:5]
+        
+        if not best_hours:
+            layout.addWidget(QLabel("SIN DATOS DE HORARIOS"), alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            for h_data in best_hours:
+                hour = h_data.get('hour', '00')
+                avg_v = round(h_data.get('avg_viewers', 0) or 0, 1)
+                part = h_data.get('participants', 0)
+                
+                row = QFrame()
+                row.setStyleSheet("border: none; background: transparent; border-bottom: 1px solid #141E2D;")
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 5, 0, 5)
+                
+                lbl_hour = QLabel(f"{hour}:00 HS")
+                lbl_hour.setStyleSheet(f"color: {COLOR_NEON_GREEN}; font-weight: bold;")
+                
+                lbl_stats = QLabel(f"AVG: {avg_v} | VOTERS: {part}")
+                lbl_stats.setStyleSheet(f"color: {COLOR_TEXT_BRIGHT}; font-size: 8pt;")
+                
+                row_layout.addWidget(lbl_hour)
+                row_layout.addStretch()
+                row_layout.addWidget(lbl_stats)
+                layout.addWidget(row)
+        
+        return container
+
+    def add_events_block(self):
+        self.panels_layout.addWidget(self.create_section_header("EVENTOS ACTIVADOS"))
+        
+        events = self.analytics_data.get('events', [])
+        
+        container = QFrame()
+        container.setStyleSheet(f"background: #0A0F19; border: 1px solid #1A2533;")
+        layout = QGridLayout(container)
+        layout.setSpacing(10)
+        
+        if not events:
+            layout.addWidget(QLabel("NO SE ACTIVARON EVENTOS EN ESTE PERIODO"), 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            for i, ev in enumerate(events):
+                name = ev.get('event_name', 'EVENTO')
+                count = ev.get('count', 0)
+                
+                ev_card = QFrame()
+                ev_card.setStyleSheet(f"background: #141E2D; border: 1px solid {COLOR_NEON_YELLOW}; padding: 5px;")
+                ev_layout = QVBoxLayout(ev_card)
+                
+                lbl_name = QLabel(name)
+                lbl_name.setStyleSheet(f"color: {COLOR_NEON_YELLOW}; font-size: 8pt; font-weight: bold; border: none;")
+                
+                lbl_count = QLabel(f"x{count}")
+                lbl_count.setStyleSheet(f"color: {COLOR_TEXT_BRIGHT}; font-size: 10pt; font-weight: bold; border: none;")
+                
+                ev_layout.addWidget(lbl_name)
+                ev_layout.addWidget(lbl_count, alignment=Qt.AlignmentFlag.AlignCenter)
+                
+                layout.addWidget(ev_card, i // 4, i % 4)
+        
+        self.panels_layout.addWidget(container)
+
+    def create_stat_card(self, label, value, color):
+        card = QFrame()
+        # Estilo HUD: bordes finos, fondo oscuro, esquinas rectas
+        card.setStyleSheet(f"""
+            QFrame {{ 
+                background: #0A0F19; 
+                border: 1px solid {color}; 
+                border-left: 4px solid {color};
+            }}
+        """)
+        card.setFixedHeight(80)
+        
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+        
+        lbl = QLabel(label)
+        lbl.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 8pt; font-weight: bold; border: none; background: transparent;")
+        
+        val = QLabel(str(value))
+        val.setStyleSheet(f"color: {color}; font-size: 18pt; font-weight: bold; border: none; background: transparent;")
+        
+        layout.addWidget(lbl)
+        layout.addWidget(val, alignment=Qt.AlignmentFlag.AlignLeft)
+        
+        return card
+
+    def export_current_data(self):
+        if self.analytics_data:
+            label = self.current_filter
+            if label == 'custom':
+                label = f"CUSTOM_{self.date_from.date().toString('yyyyMMdd')}_TO_{self.date_to.date().toString('yyyyMMdd')}"
+            export_period_to_csv(self.analytics_data, label)
+            self.lbl_status.setText(f"EXPORTADO: {label}")
+
+    def refresh_data(self):
         try:
-            if current_tab == 'DASHBOARD' or current_tab == 'EVOLUCIÓN':
-                if current_filter == 'custom':
-                    analytics_data = get_analytics_data('custom', [custom_start_date.isoformat(), custom_end_date.isoformat()])
-                else:
-                    analytics_data = get_analytics_data(current_filter)
-            elif current_tab == 'COMPARAR':
-                comparison_data = get_comparison_data(comp_filter_1, None, comp_filter_2, None)
-            elif current_tab == 'HISTORIAL':
-                sessions_history = get_sessions_history()
-            elif current_tab == 'RECOMENDACIÓN':
-                best_time_data = get_best_time_analysis()
-            
-            last_refresh = current_time
+            custom_dates = None
+            if self.current_filter == 'custom':
+                start = self.date_from.date().toString("yyyy-MM-dd")
+                end = self.date_to.date().toString("yyyy-MM-dd")
+                custom_dates = [start, end]
+                
+            self.analytics_data = get_analytics_data(self.current_filter, custom_dates)
+            self.update_dashboard()
+            self.update_evolution()
+            self.update_history_list()
+            self.lbl_status.setText(f"UPDATED: {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
-            print(f"[ANALYTICS] Error obteniendo datos: {e}")
+            print(f"[ANALYTICS] Error: {e}")
+            self.lbl_status.setText("ERROR")
+            self.lbl_status.setStyleSheet(f"color: {COLOR_NEON_RED};")
 
-    # Dibujar
-    screen.fill(COLOR_BG)
-    
-    # --- HEADER FIJO ---
-    header_h = 230 if current_tab in ['DASHBOARD', 'EVOLUCIÓN'] and current_filter == 'custom' else (180 if current_tab in ['DASHBOARD', 'EVOLUCIÓN'] else 130)
-    header_bg = pygame.Surface((WINDOW_W, header_h), pygame.SRCALPHA)
-    header_bg.fill((5, 10, 20, 255))
-    screen.blit(header_bg, (0, 0))
-    pygame.draw.line(screen, COLOR_NEON_CYAN, (0, header_h), (WINDOW_W, header_h), 2)
-    
-    title_txt = font_title.render("LEAN FX - ANALYTICS DASHBOARD", True, COLOR_NEON_CYAN)
-    screen.blit(title_txt, (50, 25))
-    
-    # Dibujar Pestañas
-    for i, tab in enumerate(TABS):
-        tab_rect = pygame.Rect(50 + i * 180, 80, 175, 40)
-        is_active = current_tab == tab
-        btn_col = COLOR_NEON_CYAN if is_active else (40, 60, 80)
-        pygame.draw.rect(screen, (20, 30, 50) if is_active else (10, 15, 25), tab_rect, border_radius=6)
-        draw_neon_rect(screen, tab_rect, btn_col, 2 if is_active else 1, glow=is_active)
-        lbl = font_small.render(tab, True, COLOR_TEXT_BRIGHT if is_active else COLOR_TEXT_DIM)
-        screen.blit(lbl, lbl.get_rect(center=tab_rect.center))
+    def update_history(self):
+        pass  # Se implementará en la pestaña historial
 
-    # Dibujar Filtros (Solo si aplica)
-    if current_tab in ['DASHBOARD', 'EVOLUCIÓN']:
-        for i, f in enumerate(FILTERS):
-            f_rect = pygame.Rect(50 + i * 165, 130, 160, 40)
-            is_active = current_filter == f['id']
-            btn_col = COLOR_NEON_GREEN if is_active else (40, 60, 80)
-            pygame.draw.rect(screen, (15, 35, 25) if is_active else (10, 15, 25), f_rect, border_radius=6)
-            draw_neon_rect(screen, f_rect, btn_col, 2 if is_active else 1, glow=is_active)
-            lbl = font_small.render(f['label'], True, COLOR_TEXT_BRIGHT if is_active else COLOR_TEXT_DIM)
-            screen.blit(lbl, lbl.get_rect(center=f_rect.center))
 
-        if current_filter == 'custom':
-            screen.blit(font_small.render("DESDE:", True, COLOR_TEXT_DIM), (50, 185))
-            start_rect = pygame.Rect(120, 180, 250, 35)
-            pygame.draw.rect(screen, (15, 25, 45), start_rect, border_radius=4)
-            txt_start = font_small.render(custom_start_date.strftime("%d / %m / %Y"), True, COLOR_TEXT_BRIGHT)
-            screen.blit(txt_start, txt_start.get_rect(center=start_rect.center))
-            
-            screen.blit(font_small.render("HASTA:", True, COLOR_TEXT_DIM), (WINDOW_W // 2 + 20, 185))
-            end_rect = pygame.Rect(WINDOW_W // 2 + 80, 180, 200, 35)
-            pygame.draw.rect(screen, (15, 25, 45), end_rect, border_radius=4)
-            txt_end = font_small.render(custom_end_date.strftime("%d/%m/%Y"), True, COLOR_TEXT_BRIGHT)
-            screen.blit(txt_end, txt_end.get_rect(center=end_rect.center))
+    def show_session_details(self, session_id):
+        # Implementar vista de detalle
+        pass
 
-            btn_apply = pygame.Rect(WINDOW_W - 180, 180, 130, 35)
-            pygame.draw.rect(screen, (0, 80, 60), btn_apply, border_radius=4)
-            apply_txt = font_small.render("APLICAR", True, COLOR_TEXT_BRIGHT)
-            screen.blit(apply_txt, apply_txt.get_rect(center=btn_apply.center))
-
-    # --- CONTENIDO SCROLLEABLE ---
-    virtual_h = max(WINDOW_H, content_height)
-    content_surf = pygame.Surface((WINDOW_W, virtual_h), pygame.SRCALPHA)
-    render_dashboard(content_surf)
-    screen.blit(content_surf, (0, header_h + scroll_y))
-
-    # Indicador de carga
-    if current_time - last_refresh < 500:
-        pygame.draw.circle(screen, COLOR_NEON_CYAN, (WINDOW_W - 50, 40), 10, 2)
-        angle = (current_time / 100) % (math.pi * 2)
-        pygame.draw.line(screen, COLOR_NEON_CYAN, (WINDOW_W - 50, 40), (int(WINDOW_W - 50 + math.cos(angle) * 10), int(40 + math.sin(angle) * 10)), 3)
-
-    pygame.display.flip()
-    clock.tick(FPS)
-
-pygame.quit()
-sys.exit(0)
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = AnalyticsWindow()
+    window.show()
+    sys.exit(app.exec())

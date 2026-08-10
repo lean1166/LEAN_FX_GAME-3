@@ -1,0 +1,14 @@
+--- ANALYTICS PERIODO: hoy ---
+sessions_count,1
+rounds,0
+max_peak,0
+global_avg_viewers,0.0
+likes,0
+messages,0
+participants,0
+fxp,0.0
+total_duration_secs,3
+
+--- EVOLUCIÓN DIARIA ---
+Fecha,Sesiones,Likes,Rondas,Peak Viewers,Avg Viewers,Messages,Participants,FXP
+2026-08-10,1,0,0,0,0.0,0,0,0.0
