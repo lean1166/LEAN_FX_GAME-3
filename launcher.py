@@ -23,7 +23,13 @@ import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-SCRIPTS = ["main.py", "window_streamer.py", "window_ranking.py", "banner_marquee.py"]
+SCRIPTS = [
+    "main.py", 
+    "window_streamer.py", 
+    "window_ranking.py", 
+    "banner_marquee.py",
+    "window_analytics.py"
+]
 
 
 def launch(script_name):
@@ -61,9 +67,9 @@ def main():
                 print("[launcher] main.py se cerró. Cerrando ventanas satélite...")
                 break
             # Si alguna ventana satélite crashea sola, no cerramos todo el juego
-            # (el streamer o el ranking pueden reintentarse manualmente después),
+            # (el streamer, el ranking o analytics pueden reintentarse manualmente después),
             # solo lo avisamos por consola.
-            for name in ("window_streamer.py", "window_ranking.py", "banner_marquee.py"):
+            for name in ("window_streamer.py", "window_ranking.py", "banner_marquee.py", "window_analytics.py"):
                 p = processes.get(name)
                 if p is not None and p.poll() is not None and p.poll() != 0:
                     print(f"[launcher] AVISO: {name} se cerró inesperadamente (código {p.poll()}).")

@@ -73,6 +73,50 @@ def init_db():
         reason TEXT
     )''')
 
+    # --- TABLAS DE ANALYTICS (FASE 2) ---
+    # Tabla de sesiones
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        end_time TEXT,
+        peak_viewers INTEGER DEFAULT 0,
+        avg_viewers_sum INTEGER DEFAULT 0,
+        avg_viewers_count INTEGER DEFAULT 0,
+        total_likes INTEGER DEFAULT 0,
+        total_messages INTEGER DEFAULT 0,
+        total_rounds INTEGER DEFAULT 0,
+        unique_participants_count INTEGER DEFAULT 0,
+        fxp_distributed REAL DEFAULT 0
+    )''')
+
+    # Tabla de votos de sesión
+    c.execute('''CREATE TABLE IF NOT EXISTS session_votes (
+        session_id INTEGER,
+        vote_type TEXT, -- 'SUBE' o 'BAJA'
+        count INTEGER DEFAULT 0,
+        PRIMARY KEY (session_id, vote_type),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )''')
+
+    # Tabla de RR stats por sesión
+    c.execute('''CREATE TABLE IF NOT EXISTS session_rr_stats (
+        session_id INTEGER,
+        rr_ratio REAL,
+        win_count INTEGER DEFAULT 0,
+        loss_count INTEGER DEFAULT 0,
+        PRIMARY KEY (session_id, rr_ratio),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )''')
+
+    # Tabla de eventos activados en sesión
+    c.execute('''CREATE TABLE IF NOT EXISTS session_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER,
+        event_name TEXT,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )''')
+
     # Insertar streamer si no existe
     c.execute('''INSERT OR IGNORE INTO players (username, balance) VALUES (?, ?)''',
               ("LEAN FX", 10000))
@@ -298,3 +342,206 @@ def get_all_players_ranked():
     players = c.fetchall()
     conn.close()
     return [dict(p) for p in players]
+
+
+# --- FUNCIONES DE ANALYTICS (FASE 2) ---
+
+def start_session():
+    """Inicia una nueva sesión y devuelve su ID"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("INSERT INTO sessions (start_time) VALUES (CURRENT_TIMESTAMP)")
+    session_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return session_id
+
+
+def end_session(session_id):
+    """Finaliza una sesión marcando el end_time"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE sessions SET end_time = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_session_metrics(session_id, viewers, likes, messages, participants_count):
+    """Actualiza métricas acumuladas y picos de la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    # Actualizar pico y promedios
+    c.execute("""UPDATE sessions SET 
+                 peak_viewers = MAX(peak_viewers, ?),
+                 avg_viewers_sum = avg_viewers_sum + ?,
+                 avg_viewers_count = avg_viewers_count + 1,
+                 total_likes = ?,
+                 total_messages = ?,
+                 unique_participants_count = MAX(unique_participants_count, ?)
+                 WHERE id = ?""", (viewers, viewers, likes, messages, participants_count, session_id))
+    conn.commit()
+    conn.close()
+
+
+def add_session_round(session_id):
+    """Incrementa el contador de rondas de la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE sessions SET total_rounds = total_rounds + 1 WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_session_vote(session_id, vote_type):
+    """Registra un voto en la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""INSERT INTO session_votes (session_id, vote_type, count) 
+                 VALUES (?, ?, 1)
+                 ON CONFLICT(session_id, vote_type) 
+                 DO UPDATE SET count = count + 1""", (session_id, vote_type))
+    conn.commit()
+    conn.close()
+
+
+def add_session_rr_result(session_id, rr_ratio, win=True):
+    """Registra el resultado de un RR en la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    if win:
+        c.execute("""INSERT INTO session_rr_stats (session_id, rr_ratio, win_count) 
+                     VALUES (?, ?, 1)
+                     ON CONFLICT(session_id, rr_ratio) 
+                     DO UPDATE SET win_count = win_count + 1""", (session_id, rr_ratio))
+    else:
+        c.execute("""INSERT INTO session_rr_stats (session_id, rr_ratio, loss_count) 
+                     VALUES (?, ?, 1)
+                     ON CONFLICT(session_id, rr_ratio) 
+                     DO UPDATE SET loss_count = loss_count + 1""", (session_id, rr_ratio))
+    conn.commit()
+    conn.close()
+
+
+def add_session_event(session_id, event_name):
+    """Registra la activación de un evento en la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("INSERT INTO session_events (session_id, event_name) VALUES (?, ?)", (session_id, event_name))
+    conn.commit()
+    conn.close()
+
+
+def add_session_fxp(session_id, amount):
+    """Acumula el FXP repartido en la sesión"""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE sessions SET fxp_distributed = fxp_distributed + ? WHERE id = ?", (amount, session_id))
+    conn.commit()
+    conn.close()
+
+
+def get_analytics_data(filter_type='hoy', custom_dates=None):
+    """
+    Obtiene datos agregados según el filtro:
+    'hoy', 'ayer', '7d', '3d', 'mes', 'custom'
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    where_clause = ""
+    params = []
+
+    if filter_type == 'hoy':
+        where_clause = "date(start_time) = date('now')"
+    elif filter_type == 'ayer':
+        where_clause = "date(start_time) = date('now', '-1 day')"
+    elif filter_type == '3d':
+        where_clause = "date(start_time) >= date('now', '-3 days')"
+    elif filter_type == '7d':
+        where_clause = "date(start_time) >= date('now', '-7 days')"
+    elif filter_type == 'mes':
+        where_clause = "date(start_time) >= date('now', 'start of month')"
+    elif filter_type == 'custom' and custom_dates:
+        where_clause = "date(start_time) BETWEEN ? AND ?"
+        params = [custom_dates[0], custom_dates[1]]
+
+    # Resumen general de sesiones
+    query_sessions = f"""
+        SELECT 
+            COUNT(*) as sessions_count,
+            SUM(total_rounds) as rounds,
+            MAX(peak_viewers) as max_peak,
+            AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as global_avg_viewers,
+            SUM(total_likes) as likes,
+            SUM(total_messages) as messages,
+            SUM(unique_participants_count) as participants,
+            SUM(fxp_distributed) as fxp,
+            SUM(strftime('%s', end_time) - strftime('%s', start_time)) as total_duration_secs
+        FROM sessions
+        WHERE {where_clause}
+    """
+    c.execute(query_sessions, params)
+    summary = dict(c.fetchone())
+
+    # Votos Sube vs Baja
+    query_votes = f"""
+        SELECT vote_type, SUM(count) as total
+        FROM session_votes
+        WHERE session_id IN (SELECT id FROM sessions WHERE {where_clause})
+        GROUP BY vote_type
+    """
+    c.execute(query_votes, params)
+    votes = {r['vote_type']: r['total'] for r in c.fetchall()}
+
+    # RR Stats
+    query_rr = f"""
+        SELECT rr_ratio, SUM(win_count) as wins, SUM(loss_count) as losses
+        FROM session_rr_stats
+        WHERE session_id IN (SELECT id FROM sessions WHERE {where_clause})
+        GROUP BY rr_ratio
+        ORDER BY (SUM(win_count) + SUM(loss_count)) DESC
+    """
+    c.execute(query_rr, params)
+    rr_stats = [dict(r) for r in c.fetchall()]
+
+    # Eventos
+    query_events = f"""
+        SELECT event_name, COUNT(*) as count
+        FROM session_events
+        WHERE session_id IN (SELECT id FROM sessions WHERE {where_clause})
+        GROUP BY event_name
+    """
+    c.execute(query_events, params)
+    events = [dict(r) for r in c.fetchall()]
+
+    # Evolución (por día)
+    query_evolution = f"""
+        SELECT date(start_time) as day, COUNT(*) as sessions, SUM(total_likes) as likes, SUM(total_rounds) as rounds
+        FROM sessions
+        WHERE {where_clause}
+        GROUP BY day
+        ORDER BY day ASC
+    """
+    c.execute(query_evolution, params)
+    evolution = [dict(r) for r in c.fetchall()]
+
+    # Mejor horario (agrupado por hora del día)
+    query_hours = f"""
+        SELECT strftime('%H', start_time) as hour, SUM(total_likes) as likes, AVG(CAST(avg_viewers_sum AS REAL) / MAX(1, avg_viewers_count)) as avg_viewers
+        FROM sessions
+        WHERE {where_clause}
+        GROUP BY hour
+        ORDER BY avg_viewers DESC
+    """
+    c.execute(query_hours, params)
+    best_hours = [dict(r) for r in c.fetchall()]
+
+    conn.close()
+    return {
+        "summary": summary,
+        "votes": votes,
+        "rr_stats": rr_stats,
+        "events": events,
+        "evolution": evolution,
+        "best_hours": best_hours
+    }

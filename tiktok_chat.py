@@ -147,6 +147,10 @@ class TikTokChatReader:
         self.reconnecting = False  # Indicador para mostrar en pantalla
         # --- Contador de likes (para el evento "liquidez por likes") ---
         self.like_count = 0  # Se resetea con reset_like_count() al iniciar cada evento
+        # --- Totales de sesión (Analytics) ---
+        self.session_total_likes = 0
+        self.session_total_messages = 0
+        self.session_unique_participants = set()
 
     def start(self):
         """Iniciar la conexión en un hilo separado"""
@@ -184,7 +188,9 @@ class TikTokChatReader:
                 @self.client.on(LikeEvent)
                 async def on_like(event: LikeEvent):
                     try:
-                        self.like_count += extract_like_count(event)
+                        count = extract_like_count(event)
+                        self.like_count += count
+                        self.session_total_likes += count
                     except Exception as like_err:
                         print(f"[TIKTOK] Error procesando like: {like_err}")
 
@@ -195,6 +201,10 @@ class TikTokChatReader:
                         unique_id = str(event.user.id)
                         comment = event.comment.strip().upper()
                         avatar_url = extract_avatar_url(event.user)
+
+                        # Analytics
+                        self.session_total_messages += 1
+                        self.session_unique_participants.add(unique_id)
 
                         # Guardar todos los comentarios (debug)
                         self.all_comments.append({
@@ -298,6 +308,12 @@ class TikTokChatReader:
     def reset_like_count(self):
         """Reiniciar el contador de likes (al empezar un evento de liquidez)"""
         self.like_count = 0
+
+    def reset_session_totals(self):
+        """Reiniciar totales de sesión (Analytics)"""
+        self.session_total_likes = 0
+        self.session_total_messages = 0
+        self.session_unique_participants = set()
 
     def get_like_count(self):
         """Obtener el conteo de likes acumulado desde el último reset"""

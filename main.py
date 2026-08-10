@@ -11,7 +11,11 @@ from avatar_utils import get_viewer_avatar
 from database import (get_streamer_stats, update_player_balance, add_trade_history,
                       check_monthly_reset, get_config, set_config, create_player,
                       get_player, get_all_players_ranked, add_bonus_to_all_players,
-                      reset_all_players)
+                      reset_all_players,
+                      # Fase 2 Analytics
+                      start_session, end_session, update_session_metrics,
+                      add_session_round, add_session_vote, add_session_rr_result,
+                      add_session_event, add_session_fxp)
 from ranking_utils import load_top_viewers
 from tiktok_chat import TikTokChatReader
 import luvvoice_tts
@@ -502,6 +506,15 @@ tiktok_chat.start()  # Inicia en hilo separado
 viewer_votes = []  # Lista de {"name": str, "vote": "BUY"/"SELL"} votos pendientes
 viewer_votes_display = []  # Copia para mostrar incluso después de resolver
 viewer_trade_active = None  # Trade activo de viewers: {"type", "entry", "sl", "tp", "entry_index"}
+
+# --- FASE 2: ANALYTICS ---
+current_session_id = None
+last_analytics_update = 0
+session_unique_participants = set()
+session_total_messages = 0
+session_total_likes = 0
+last_tiktok_likes = 0
+last_tiktok_comments_count = 0
 viewer_trade_is_extremo = False  # Si la zona actual es EXTREMO (streamer también opera)
 running = True
 clock = pygame.time.Clock()
@@ -1432,6 +1445,15 @@ while app_running:
                 guide_animation_start = pygame.time.get_ticks()  # Iniciar animación de la guía
                 liquidity_last_trigger = pygame.time.get_ticks()
                 liquidity_event_active = None
+                
+                # Iniciar sesión de Analytics (Fase 2)
+                try:
+                    current_session_id = start_session()
+                    tiktok_chat.reset_session_totals()
+                    print(f"[ANALYTICS] Sesión iniciada ID: {current_session_id}")
+                except Exception as e:
+                    print(f"[ANALYTICS] Error iniciando sesión: {e}")
+
                 if sound_ambient is not None:
                     sound_ambient.stop()
                 # Iniciar playlist de música
@@ -2725,6 +2747,10 @@ while app_running:
                 liquidity_event_active = {"type": "C", "start_time": current_time, "reached_level": -1}
             elif event_type == "D":
                 liquidity_event_active = {"type": "D", "start_time": current_time}
+            
+            # Fase 2: Registrar evento en Analytics
+            if current_session_id is not None:
+                add_session_event(current_session_id, f"LIQUIDITY_{event_type}")
 
         if liquidity_event_active is not None:
             _ev = liquidity_event_active
@@ -2752,6 +2778,9 @@ while app_running:
                     if _ev["reached_level"] >= 0:
                         _bonus = LIQUIDITY_C_LEVELS[_ev["reached_level"]][1]
                         add_bonus_to_all_players(_bonus)
+                        # Fase 2: Analytics FXP
+                        if current_session_id is not None:
+                            add_session_fxp(current_session_id, _bonus)
                         top_viewers = load_top_viewers()
                         play_sound(sound_liquidity_success)
                     liquidity_event_active = None
@@ -2760,6 +2789,9 @@ while app_running:
                 # Barra unica: si se llena antes de que termine el tiempo, bono y corta ahi
                 if _current_likes >= LIQUIDITY_D_TARGET:
                     add_bonus_to_all_players(LIQUIDITY_D_BONUS)
+                    # Fase 2: Analytics FXP
+                    if current_session_id is not None:
+                        add_session_fxp(current_session_id, LIQUIDITY_D_BONUS)
                     top_viewers = load_top_viewers()
                     play_sound(sound_liquidity_success)
                     liquidity_event_active = None
@@ -2998,6 +3030,9 @@ while app_running:
                 viewer_votes = []
                 for tv in tiktok_votes:
                     viewer_votes.append({"name": tv["name"], "vote": tv["vote"], "rr": tv.get("rr", 1.0)})
+                    # Fase 2: Registrar voto en Analytics
+                    if current_session_id is not None:
+                        add_session_vote(current_session_id, 'SUBE' if tv["vote"] == "BUY" else 'BAJA')
                     # Crear jugador en DB si no existe
                     from database import get_player
                     if not get_player(tv["name"]):
@@ -3056,6 +3091,9 @@ while app_running:
                             if pl:
                                 update_player_balance(uname, max(8000, pl["balance"] - TRADE_RISK), loss=True)
                                 add_trade_history(uname, g_dir, "LOSS", -TRADE_RISK, 1.0)
+                                # Fase 2: Analytics RR
+                                if current_session_id is not None:
+                                    add_session_rr_result(current_session_id, 1.0, win=False)
                                 add_ticker_event(f"{uname} LOSS: -{TRADE_RISK} FXP")
                             viewer_streaks[uname] = 0
                     grp["resolved"] = True
@@ -3084,6 +3122,9 @@ while app_running:
                                 gain = int(TRADE_RISK * lvl["rr"])
                                 update_player_balance(uname, pl["balance"] + gain, win=True)
                                 add_trade_history(uname, g_dir, "WIN", gain, lvl["rr"])
+                                # Fase 2: Analytics RR
+                                if current_session_id is not None:
+                                    add_session_rr_result(current_session_id, lvl["rr"], win=True)
                                 add_ticker_event(f"{uname} WIN: +{gain} FXP (RR {lvl['rr']})")
                             viewer_streaks[uname] = viewer_streaks.get(uname, 0) + 1
                             if viewer_streaks[uname] >= STREAK_MIN:
@@ -3139,6 +3180,9 @@ while app_running:
                     check_top5_levelup_sound(current_time)
                     viewer_trade_active = None
                     viewer_votes = []
+                    # Fase 2: Registrar ronda finalizada
+                    if current_session_id is not None:
+                        add_session_round(current_session_id)
                     if active_trade is None:
                         viewer_votes_display = []
         if not audio_manager.juego_pausado and not zone_frozen and liquidity_event_active is None and current_time - last_candle_time >= CANDLE_DURATION:
@@ -3866,7 +3910,7 @@ while app_running:
                     for x in range(box_start_x, box_end_x, 10):
                         pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
                     # Etiqueta de Límite de pérdida (Puntuación flotante fija)
-                    sl_label = font_trade.render("SL", True, (255, 100, 100))
+                    sl_label = font_trade.render("LÍMITE", True, (255, 100, 100))
                     screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
                         
                     # Niveles de Meta (dibujamos 1, 2, 3 y MAX_RR)
@@ -3993,7 +4037,7 @@ while app_running:
                     for x in range(box_start_x, box_end_x, 10):
                         pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
                     # Etiqueta de Límite de pérdida (Puntuación flotante fija)
-                    sl_label = font_trade.render("SL", True, (255, 100, 100))
+                    sl_label = font_trade.render("LÍMITE", True, (255, 100, 100))
                     screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
                     # Líneas punteadas sutiles para cada nivel R:R (Meta)
                     for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
@@ -4567,9 +4611,31 @@ while app_running:
                 entry_y = guide_y + (guide_h * anim_progress)
                 pygame.draw.line(screen, (255, 255, 255, 120), (guide_x - 10, entry_y), (guide_x + guide_w - 10, entry_y), 2)
 
+            # --- ACTUALIZACIÓN DE ANALYTICS (FASE 2) ---
+            if current_session_id is not None and current_time - last_analytics_update > 10000: # Cada 10 segundos
+                last_analytics_update = current_time
+                try:
+                    viewers = tiktok_chat.client.viewer_count if tiktok_chat.client and tiktok_chat.connected else 0
+                    # Si no hay conexión real, podemos usar un valor simulado si el usuario quiere,
+                    # pero por ahora dejamos 0 o lo que devuelva el cliente.
+                    likes = tiktok_chat.session_total_likes + simulated_likes
+                    msgs = tiktok_chat.session_total_messages
+                    parts = len(tiktok_chat.session_unique_participants)
+                    update_session_metrics(current_session_id, viewers, likes, msgs, parts)
+                except Exception as e:
+                    print(f"[ANALYTICS] Error actualizando métricas: {e}")
+
         pygame.display.flip()
 
     # Parar música al salir del game loop (volver al menú)
+    if current_session_id is not None:
+        try:
+            end_session(current_session_id)
+            print(f"[ANALYTICS] Sesión finalizada ID: {current_session_id}")
+            current_session_id = None
+        except Exception as e:
+            print(f"[ANALYTICS] Error finalizando sesión: {e}")
+
     if sound_game_music is not None:
         sound_game_music.stop()
     if music_playing:

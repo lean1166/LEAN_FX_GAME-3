@@ -56,7 +56,7 @@ class TradeSimulator:
             # Draw SL line
             pygame.draw.line(self.target, (255, 0, 0), (trade.x_entry, self.y_entry()), (self.sim_info.width, y_sl))
             sl_ratio = (abs(y_sl - self.y_entry()) / (self.sim_info.height / 2)) * sl_risk
-            text = font.render(f"SL: {sl_ratio:.1f} R", True, (255, 0, 0))
+            text = font.render(f"LÍMITE: {sl_ratio:.1f} R", True, (255, 0, 0))
             self.target.blit(text, (self.sim_info.width, y_sl - 30))
 
             # Draw TP line
@@ -69,7 +69,7 @@ class TradeSimulator:
             # Draw SL line
             pygame.draw.line(self.target, (255, 0, 0), (trade.x_entry, self.y_entry()), (self.sim_info.width, y_sl))
             sl_ratio = (abs(y_sl - self.y_entry()) / (self.sim_info.height / 2)) * sl_risk
-            text = font.render(f"SL: {sl_ratio:.1f} R", True, (255, 0, 0))
+            text = font.render(f"LÍMITE: {sl_ratio:.1f} R", True, (255, 0, 0))
             self.target.blit(text, (self.sim_info.width, y_sl - 30))
 
             # Draw TP line
