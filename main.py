@@ -11,13 +11,16 @@ from avatar_utils import get_viewer_avatar
 from database import (get_streamer_stats, update_player_balance, add_trade_history,
                       check_monthly_reset, get_config, set_config, create_player,
                       get_player, get_all_players_ranked, add_bonus_to_all_players,
-                      reset_all_players,
+                      reset_all_players, merge_v2_data,
                       # Fase 2 Analytics
                       start_session, end_session, update_session_metrics,
                       add_session_round, add_session_vote, add_session_rr_result,
                       add_session_event, add_session_fxp)
 from ranking_utils import load_top_viewers
 from tiktok_chat import TikTokChatReader
+# Inicializar el lector de TikTok globalmente para que arranque al iniciar main.py
+tiktok_reader = TikTokChatReader(username="lean.fx1")
+tiktok_reader.start()
 import luvvoice_tts
 
 # --- CONFIGURACIÓN DE COLORES PERSONALIZABLES ---
@@ -499,6 +502,21 @@ MAX_RR = int(get_config("max_rr", "3"))  # Límite máximo de Meta permitido (1:
 GLOBAL_COLOR_BG = parse_color(get_config("color_bg", "8,12,20"), (8, 12, 20))
 GLOBAL_COLOR_BULL = parse_color(get_config("color_bull", "38,166,154"), (38, 166, 154))
 GLOBAL_COLOR_BEAR = parse_color(get_config("color_bear", "239,83,80"), (239, 83, 80))
+
+# --- MIGRACIÓN DE DATOS V2 (OPCIONAL) ---
+V2_DB_PATH = r"C:\Users\leand\Desktop\LEAN FX GAME TODAS LAS VERSIONES\LEAN_FX_GAME_V2\lean_fx_game.db"
+if os.path.exists(V2_DB_PATH):
+    print(f"[MIGRACIÓN] Detectada base de datos V2 en: {V2_DB_PATH}")
+    # Solo migramos si no se ha hecho antes (podemos guardar una marca en config)
+    if get_config("v2_migrated", "0") == "0":
+        success, msg = merge_v2_data(V2_DB_PATH)
+        if success:
+            set_config("v2_migrated", "1")
+            print(f"[MIGRACIÓN] Éxito: {msg}")
+        else:
+            print(f"[MIGRACIÓN] Fallo: {msg}")
+else:
+    print("[MIGRACIÓN] No se encontró base de datos V2 para importar.")
 
 tiktok_chat = TikTokChatReader(username=TIKTOK_USERNAME, max_rr=MAX_RR)
 tiktok_chat.start()  # Inicia en hilo separado
@@ -1273,6 +1291,16 @@ def show_loading_screen():
 # === LOOP PRINCIPAL ===
 app_running = show_loading_screen()
 while app_running:
+    # --- AUTO-INICIO DE SESIÓN GLOBAL ---
+    # Si TikTok se conecta, iniciamos sesión inmediatamente (incluso en el menú)
+    if current_session_id is None and tiktok_chat.is_connected():
+        try:
+            current_session_id = start_session()
+            tiktok_chat.reset_session_totals()
+            print(f"[ANALYTICS] Sesión detectada/iniciada globalmente ID: {current_session_id}")
+        except Exception as e:
+            print(f"[ANALYTICS] Error auto-iniciando sesión global: {e}")
+
     # Reset variables para volver al menú
     in_menu = True
     menu_click_btn = None
@@ -1446,13 +1474,15 @@ while app_running:
                 liquidity_last_trigger = pygame.time.get_ticks()
                 liquidity_event_active = None
                 
-                # Iniciar sesión de Analytics (Fase 2)
-                try:
-                    current_session_id = start_session()
-                    tiktok_chat.reset_session_totals()
-                    print(f"[ANALYTICS] Sesión iniciada ID: {current_session_id}")
-                except Exception as e:
-                    print(f"[ANALYTICS] Error iniciando sesión: {e}")
+                # La sesión se inicia automáticamente al conectar con TikTok (ver actualización de analytics)
+                # o manualmente si el usuario inicia el juego sin conexión activa.
+                if current_session_id is None:
+                    try:
+                        current_session_id = start_session()
+                        tiktok_chat.reset_session_totals()
+                        print(f"[ANALYTICS] Sesión iniciada manualmente ID: {current_session_id}")
+                    except Exception as e:
+                        print(f"[ANALYTICS] Error iniciando sesión: {e}")
 
                 if sound_ambient is not None:
                     sound_ambient.stop()
@@ -2461,6 +2491,7 @@ while app_running:
     while running and app_running:
         clock.tick(60)
         current_time = pygame.time.get_ticks()
+        curr_ticks = current_time
         
         # --- DEFINICIÓN DE VARIABLES DE DISEÑO (LAYOUT) ---
         guide_w = int(SCREEN_W * 0.18)
@@ -3328,7 +3359,9 @@ while app_running:
             visible_start_global = total_candles - len(visible_candles)
             # --- RENDERIZAR ORDER BLOCKS, DECISIONAL, FVG ---
             ob_surface = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            for ob_data, ob_opacity, ob_label in [(prev_ob, 20, ""), (active_ob, 40, "EXTREMO")]:
+            
+            # Solo dibujamos el bloque activo (EXTREMO) para una interfaz limpia
+            for ob_data, ob_opacity, ob_label in [(active_ob, 45, "EXTREMO")]:
                 if ob_data is None:
                     continue
                 # No dibujar si ya fue mitigada
@@ -3369,65 +3402,82 @@ while app_running:
                     ob_color = (*GLOBAL_COLOR_BULL, ob_opacity)
                 else:
                     ob_color = (*GLOBAL_COLOR_BEAR, ob_opacity)
+                
+                # Dibujo de la caja limpia de la zona
                 pygame.draw.rect(ob_surface, ob_color, (ob_x_start, ob_y_high, ob_width, ob_height))
+                # Borde sutil para definir la zona
+                pygame.draw.rect(ob_surface, (*ob_color[:3], 150), (ob_x_start, ob_y_high, ob_width, ob_height), 1)
+
                 if ob_label:
-                    label_txt = font_ob.render(ob_label, True, (255, 255, 255))
+                    # Determinar etiqueta de operación activa si existe
+                    display_label = ob_label
+                    if active_trade and not active_trade.get("cerrada"):
+                        for g_dir, grp in active_trade.get("groups", {}).items():
+                            if not grp.get("resolved"):
+                                display_label = f"{ob_label} - {g_dir.replace('BUY', 'COMPRA').replace('SELL', 'VENTA')}"
+                                break
+                    
+                    label_txt = font_ob.render(display_label, True, (255, 255, 255))
                     label_rect = label_txt.get_rect(center=(ob_x_start + ob_width // 2, ob_y_high + ob_height // 2))
                     
                     # Realce estético: Cuadro con fondo oscuro y borde cian brillante (glow)
-                    padding_h, padding_v = 8, 4
+                    padding_h, padding_v = 10, 5
                     bg_rect = label_rect.inflate(padding_h * 2, padding_v * 2)
-                    pygame.draw.rect(ob_surface, (5, 12, 25, 240), bg_rect, border_radius=4)
+                    pygame.draw.rect(ob_surface, (5, 12, 25, 230), bg_rect, border_radius=4)
                     
                     # Efecto de resplandor (glow) cian eléctrico intenso
                     glow_color = (0, 255, 255)
-                    for i in range(3):
-                        alpha = 180 // (i + 1)
+                    for i in range(2):
+                        alpha = 150 // (i + 1)
                         pygame.draw.rect(ob_surface, (*glow_color, alpha), bg_rect.inflate(i*2, i*2), 1, border_radius=4+i)
                     
                     ob_surface.blit(label_txt, label_rect)
+            
             if active_decisional is not None:
-                # No dibujar si ya fue mitigada
+                # Lógica para DECISIONAL similar a EXTREMO
                 dec_zone_id = f"dec_{active_decisional['index']}"
                 dec_price_id = f"dec_{int(active_decisional['high']*10)}_{int(active_decisional['low']*10)}"
-                if dec_zone_id not in zones_mitigated and dec_price_id not in zones_mitigated:
+                is_mitigated = dec_zone_id in zones_mitigated or dec_price_id in zones_mitigated
+                
+                info = zones_mitigated_info.get(dec_zone_id) or zones_mitigated_info.get(dec_price_id)
+                if not (is_mitigated and info and info.get("bos_count", 0) >= 2):
                     dec_vis = active_decisional["index"] - visible_start_global
                     if 0 <= dec_vis < len(visible_candles):
                         dec_x_start = int(start_x + (dec_vis * spacing))
-                        dec_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
+                        if is_mitigated and info:
+                            mit_vis = info["index"] - visible_start_global
+                            dec_x_end = int(start_x + (mit_vis * spacing)) + candle_width if 0 <= mit_vis < len(visible_candles) else int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
+                        else:
+                            dec_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
+                            
                         dec_y_high = center_y - int((active_decisional["high"] - view_center_price) * vertical_zoom)
                         dec_y_low = center_y - int((active_decisional["low"] - view_center_price) * vertical_zoom)
                         dec_height = max(1, dec_y_low - dec_y_high)
                         dec_width = max(1, dec_x_end - dec_x_start)
+                        
+                        dec_opacity = 30 if not is_mitigated else 15
                         if active_decisional["type"] == "ALCISTA":
-                            dec_color = (*GLOBAL_COLOR_BULL, 30)
+                            dec_color = (*GLOBAL_COLOR_BULL, dec_opacity)
                         else:
-                            dec_color = (*GLOBAL_COLOR_BEAR, 30)
+                            dec_color = (*GLOBAL_COLOR_BEAR, dec_opacity)
+                        
                         pygame.draw.rect(ob_surface, dec_color, (dec_x_start, dec_y_high, dec_width, dec_height))
-                        dec_txt = font_ob.render("DECISIONAL", True, (255, 255, 255))
+                        pygame.draw.rect(ob_surface, (*dec_color[:3], 100), (dec_x_start, dec_y_high, dec_width, dec_height), 1)
+                        
+                        dec_label = "DECISIONAL"
+                        if active_trade and not active_trade.get("cerrada"):
+                             for g_dir, grp in active_trade.get("groups", {}).items():
+                                if not grp.get("resolved"):
+                                    dec_label = f"DECISIONAL - {g_dir.replace('BUY', 'COMPRA').replace('SELL', 'VENTA')}"
+                                    break
+                                    
+                        dec_txt = font_ob.render(dec_label, True, (255, 255, 255))
                         dec_rect = dec_txt.get_rect(center=(dec_x_start + dec_width // 2, dec_y_high + dec_height // 2))
+                        
+                        # Fondo oscuro para legibilidad
+                        pygame.draw.rect(ob_surface, (5, 12, 25, 200), dec_rect.inflate(12, 6), border_radius=3)
                         ob_surface.blit(dec_txt, dec_rect)
-                else:
-                    # Mitigada: dibujar hasta punto de mitigación, borrar después de 2 BOS
-                    info = zones_mitigated_info.get(dec_zone_id) or zones_mitigated_info.get(dec_price_id)
-                    if info and info.get("bos_count", 0) < 2:
-                        dec_vis = active_decisional["index"] - visible_start_global
-                        if 0 <= dec_vis < len(visible_candles):
-                            dec_x_start = int(start_x + (dec_vis * spacing))
-                            mit_vis = info["index"] - visible_start_global
-                            if 0 <= mit_vis < len(visible_candles):
-                                dec_x_end = int(start_x + (mit_vis * spacing)) + candle_width
-                            else:
-                                dec_x_end = int(start_x + ((len(visible_candles) - 1) * spacing)) + candle_width
-                            dec_y_high = center_y - int((active_decisional["high"] - view_center_price) * vertical_zoom)
-                            dec_y_low = center_y - int((active_decisional["low"] - view_center_price) * vertical_zoom)
-                            dec_height = max(1, dec_y_low - dec_y_high)
-                            dec_width = max(1, dec_x_end - dec_x_start)
-                            if active_decisional["type"] == "ALCISTA":
-                                dec_color = (*GLOBAL_COLOR_BULL, 15)
-                            else:
-                                dec_color = (*GLOBAL_COLOR_BEAR, 15)
-                            pygame.draw.rect(ob_surface, dec_color, (dec_x_start, dec_y_high, dec_width, dec_height))
+            
             screen.blit(ob_surface, (0, 0))
             for index, candle in enumerate(visible_candles):
                 x_pos = int(start_x + (index * spacing))
@@ -3894,41 +3944,124 @@ while app_running:
                     box_visual_bottom = max(tp_top + max(0, tp_height), sl_top + max(0, sl_height))
                     box_height = box_visual_bottom - box_visual_top
                     
-                    box_alpha = 20 if grp.get("resolved") else 40
-                    if rect_width > 0:
-                        if tp_height > 0:
-                            tp_surface = pygame.Surface((rect_width, tp_height), pygame.SRCALPHA)
-                            tp_surface.fill((*GLOBAL_COLOR_BULL, box_alpha))
-                            screen.blit(tp_surface, (box_start_x, tp_top))
-                        if sl_height > 0:
-                            sl_surface = pygame.Surface((rect_width, sl_height), pygame.SRCALPHA)
-                            sl_surface.fill((*GLOBAL_COLOR_BEAR, box_alpha))
-                            screen.blit(sl_surface, (box_start_x, sl_top))
-                            
-                    # Línea de SL
-                    sl_line_alpha = 100 if grp.get("resolved") else 255
-                    for x in range(box_start_x, box_end_x, 10):
-                        pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
-                    # Etiqueta de Límite de pérdida (Puntuación flotante fija)
-                    sl_label = font_trade.render("LÍMITE", True, (255, 100, 100))
-                    screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
+                    # --- RENDERIZADO DE POSICIÓN DINÁMICA (image_9.png) ---
+                    # Los bloques geométricos aparecen solo cuando el trade está activo
+                    
+                    if visible_candles:
+                        current_price = visible_candles[-1]["close"]
+                        current_price_y = center_y - int((current_price - view_center_price) * vertical_zoom)
                         
-                    # Niveles de Meta (dibujamos 1, 2, 3 y MAX_RR)
-                    for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
+                        # --- RENDERIZADO ESTILO TRADINGVIEW (CAPAS) ---
+                        # Colores Neón con Transparencia
+                        base_alpha = 45   # ~18-20% Opacidad base fija
+                        prog_alpha = 130  # Opacidad más alta para el progreso dinámico
+                        
+                        color_profit = (0, 255, 120)  # Verde Neón
+                        color_loss = (255, 30, 30)    # Rojo Neón
+                        color_divider = (80, 80, 80)  # Gris medio nítido
+                        
+                        # 1. CAPA BASE FIJA (Estructura completa del trade)
+                        base_surf = pygame.Surface((rect_width, box_height), pygame.SRCALPHA)
+                        
+                        # Dibujar bloque de Profit proyectado (TP)
+                        pygame.draw.rect(base_surf, (*color_profit, base_alpha), 
+                                       (0, tp_top - box_visual_top, rect_width, tp_height))
+                        
+                        # Dibujar bloque de Riesgo proyectado (SL)
+                        pygame.draw.rect(base_surf, (*color_loss, base_alpha), 
+                                       (0, sl_top - box_visual_top, rect_width, sl_height))
+                        
+                        screen.blit(base_surf, (box_start_x, box_visual_top))
+                        
+                        # 2. CAPA DINÁMICA DE PROGRESO (Desde entrada hasta precio actual)
+                        prog_h = abs(current_price_y - entry_y)
+                        if prog_h > 0:
+                            prog_y = min(entry_y, current_price_y)
+                            # Determinar si el progreso es Profit o Loss según dirección
+                            is_profit = (g_dir == "BUY" and current_price_y <= entry_y) or (g_dir == "SELL" and current_price_y >= entry_y)
+                            p_color = color_profit if is_profit else color_loss
+                            
+                            prog_surf = pygame.Surface((rect_width, prog_h), pygame.SRCALPHA)
+                            prog_surf.fill((*p_color, prog_alpha))
+                            screen.blit(prog_surf, (box_start_x, prog_y))
+                        
+                        # Línea de Entrada Divisoria (Nítida y Fija al trade)
+                        pygame.draw.line(screen, color_divider, (box_start_x, entry_y), (box_start_x + rect_width, entry_y), 2)
+
+                    # 1. Línea Horizontal de Entrada Extendida (Cian Neón Dotted)
+                    entry_line_color = (0, 255, 255, 120)
+                    for x in range(line_start_x, int(SCREEN_W * 0.72), 15):
+                        pygame.draw.line(screen, entry_line_color, (x, entry_y), (min(x + 8, int(SCREEN_W * 0.72)), entry_y), 1)
+
+                    # 2. Flecha de Entrada y Ratio (Cian Neón Intenso con Glow)
+                    arrow_color = (0, 255, 255) # Cian Neón Puro
+                    arrow_size = 18
+                    if entry_vis >= 0 and entry_vis < len(visible_candles):
+                        # Efecto de resplandor para la flecha
+                        glow_color = (0, 255, 255, 80)
+                        glow_surf = pygame.Surface((arrow_size + 10, arrow_size + 10), pygame.SRCALPHA)
+                        
+                        if g_dir == "BUY":
+                            # Glow flecha arriba
+                            points_glow = [(arrow_size//2 + 5, 0), (0, arrow_size + 5), (arrow_size + 10, arrow_size + 5)]
+                            pygame.draw.polygon(glow_surf, glow_color, points_glow)
+                            screen.blit(glow_surf, (line_start_x - arrow_size//2 - 5, entry_y - 2))
+                            
+                            # Flecha sólida
+                            points = [(line_start_x, entry_y + 3), (line_start_x - arrow_size//2, entry_y + 20), (line_start_x + arrow_size//2, entry_y + 20)]
+                            pygame.draw.polygon(screen, arrow_color, points)
+                        else:
+                            # Glow flecha abajo
+                            points_glow = [(arrow_size//2 + 5, arrow_size + 5), (0, 0), (arrow_size + 10, 0)]
+                            pygame.draw.polygon(glow_surf, glow_color, points_glow)
+                            screen.blit(glow_surf, (line_start_x - arrow_size//2 - 5, entry_y - arrow_size - 3))
+                            
+                            # Flecha sólida
+                            points = [(line_start_x, entry_y - 3), (line_start_x - arrow_size//2, entry_y - 20), (line_start_x + arrow_size//2, entry_y - 20)]
+                            pygame.draw.polygon(screen, arrow_color, points)
+                        
+                        # Etiqueta de Ratio (Eliminada a petición del usuario)
+                        pass
+
+                    # 3. Línea de Stop Loss (Rojo Neón Intenso con Glow)
+                    sl_color = (255, 30, 30) # Rojo Neón Intenso
+                    sl_glow_color = (255, 30, 30, 60)
+                    sl_line_alpha = 180 if grp.get("resolved") else 255
+                    
+                    # Dibujar resplandor de la línea
+                    sl_glow_surf = pygame.Surface((box_end_x - box_start_x, 6), pygame.SRCALPHA)
+                    pygame.draw.line(sl_glow_surf, sl_glow_color, (0, 3), (box_end_x - box_start_x, 3), 4)
+                    screen.blit(sl_glow_surf, (box_start_x, grp_sl_y - 3))
+                    
+                    # Línea principal sólida y brillante
+                    for x in range(box_start_x, box_end_x, 12):
+                        pygame.draw.line(screen, sl_color, (x, grp_sl_y), (min(x + 8, box_end_x), grp_sl_y), 2)
+                        
+                    # 4. Niveles de Meta (Etiquetas Jerárquicas META 1, META 2, LÍMITE)
+                    for idx, (lvl, lvl_y) in enumerate(zip(grp["levels"], tp_levels_y)):
                         rr_val = int(lvl['rr'])
                         if rr_val in [1, 2, 3, MAX_RR]:
-                            tp_line_alpha = 60 if grp.get("resolved") or lvl.get("resolved") else 120
+                            tp_line_alpha = 30 if grp.get("resolved") or lvl.get("resolved") else 60
                             dotted = (200, 200, 200, tp_line_alpha)
-                            for x in range(box_start_x, box_end_x, 8):
+                            for x in range(box_start_x, box_end_x, 20):
                                 pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
                             
-                            label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
-                            lvl_label = font_trade.render(f"META {rr_val}", True, label_col)
-                            screen.blit(lvl_label, (box_start_x, lvl_y - 14))
+                            # Etiquetas de Meta
+                            meta_text = "LÍMITE" if rr_val == MAX_RR else f"META {idx + 1}"
+                            meta_surf = font_trade.render(meta_text, True, (200, 200, 200))
+                            meta_surf.set_alpha(150)
+                            meta_rect = meta_surf.get_rect()
+                            
+                            # Posicionamiento simétrico en el borde de la caja
+                            if g_dir == "BUY":
+                                meta_rect.bottomright = (box_end_x - 5, lvl_y - 2)
+                            else:
+                                meta_rect.topright = (box_end_x - 5, lvl_y + 2)
+                            screen.blit(meta_surf, meta_rect)
 
-                    # Línea de entrada
+                    # Línea de entrada corta (sobre la caja)
                     for x in range(box_start_x, box_end_x, 12):
-                        pygame.draw.line(screen, (255, 255, 255, 100), (x, entry_y), (x + 6, entry_y), 1)
+                        pygame.draw.line(screen, (255, 255, 255, 80), (x, entry_y), (x + 6, entry_y), 1)
                         
                     # Destello (flash) local y limpio
                     if grp.get("flash"):
@@ -4021,38 +4154,113 @@ while app_running:
                     box_visual_top = min(tp_top, sl_top)
                     box_visual_bottom = max(tp_top + max(0, tp_height), sl_top + max(0, sl_height))
                     box_height = box_visual_bottom - box_visual_top
-                    # Cajas TP/SL - Opacidad reducida si ya se resolvió
-                    box_alpha = 20 if grp.get("resolved") else 40
-                    if rect_width > 0:
-                        if tp_height > 0:
-                            tp_surface = pygame.Surface((rect_width, tp_height), pygame.SRCALPHA)
-                            tp_surface.fill((*GLOBAL_COLOR_BULL, box_alpha))
-                            screen.blit(tp_surface, (box_start_x, tp_top))
-                        if sl_height > 0:
-                            sl_surface = pygame.Surface((vbox_w, sl_height), pygame.SRCALPHA)
-                            sl_surface.fill((*GLOBAL_COLOR_BEAR, box_alpha))
-                            screen.blit(sl_surface, (box_start_x, sl_top))
-                    # Línea punteada de SL
-                    sl_line_alpha = 100 if grp.get("resolved") else 255
-                    for x in range(box_start_x, box_end_x, 10):
-                        pygame.draw.line(screen, (*GLOBAL_COLOR_BEAR, sl_line_alpha), (x, grp_sl_y), (min(x + 5, box_end_x), grp_sl_y), 1)
-                    # Etiqueta de Límite de pérdida (Puntuación flotante fija)
-                    sl_label = font_trade.render("LÍMITE", True, (255, 100, 100))
-                    screen.blit(sl_label, (box_start_x, grp_sl_y - 14))
-                    # Líneas punteadas sutiles para cada nivel R:R (Meta)
-                    for lvl, lvl_y in zip(grp["levels"], tp_levels_y):
-                        tp_line_alpha = 60 if grp.get("resolved") or lvl.get("resolved") else 120
-                        dotted = (200, 200, 200, tp_line_alpha)
-                        for x in range(box_start_x, box_end_x, 8):
-                            pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
-                        # Etiqueta MetaX - tachado o gris si ya se resolvió
-                        rr_val = int(lvl['rr'])
-                        label_col = (100, 100, 100) if lvl.get("resolved") else GLOBAL_COLOR_BULL
-                        lvl_label = font_trade.render(f"META {rr_val}", True, label_col)
-                        screen.blit(lvl_label, (box_start_x, lvl_y - 14))
-                    # Línea de entrada
+                    # --- RENDERIZADO ESTILO TRADINGVIEW (CAPAS - VIEWERS) ---
+                    if visible_candles:
+                        current_price = visible_candles[-1]["close"]
+                        current_price_y = center_y - int((current_price - view_center_price) * vertical_zoom)
+                        
+                        base_alpha = 40   # Opacidad base fija ligeramente menor para viewers
+                        prog_alpha = 110  # Opacidad progreso dinámica para viewers
+                        
+                        color_profit = (0, 255, 120)  # Verde Neón
+                        color_loss = (255, 30, 30)    # Rojo Neón
+                        color_divider = (70, 70, 70)  # Gris oscuro nítido
+                        
+                        # 1. CAPA BASE FIJA (Estructura completa del trade)
+                        base_surf = pygame.Surface((rect_width, box_height), pygame.SRCALPHA)
+                        
+                        # Dibujar bloque de Profit proyectado (TP)
+                        pygame.draw.rect(base_surf, (*color_profit, base_alpha), 
+                                       (0, tp_top - box_visual_top, rect_width, tp_height))
+                        
+                        # Dibujar bloque de Riesgo proyectado (SL)
+                        pygame.draw.rect(base_surf, (*color_loss, base_alpha), 
+                                       (0, sl_top - box_visual_top, rect_width, sl_height))
+                        
+                        screen.blit(base_surf, (box_start_x, box_visual_top))
+                        
+                        # 2. CAPA DINÁMICA DE PROGRESO (Desde entrada hasta precio actual)
+                        prog_h = abs(current_price_y - entry_y)
+                        if prog_h > 0:
+                            prog_y = min(entry_y, current_price_y)
+                            # Determinar si el progreso es Profit o Loss según dirección
+                            is_profit = (g_dir == "BUY" and current_price_y <= entry_y) or (g_dir == "SELL" and current_price_y >= entry_y)
+                            p_color = color_profit if is_profit else color_loss
+                            
+                            prog_surf = pygame.Surface((rect_width, prog_h), pygame.SRCALPHA)
+                            prog_surf.fill((*p_color, prog_alpha))
+                            screen.blit(prog_surf, (box_start_x, prog_y))
+                        
+                        pygame.draw.line(screen, color_divider, (box_start_x, entry_y), (box_start_x + rect_width, entry_y), 2)
+
+                    # 1. Línea Horizontal de Entrada Extendida (Cian Neón Dotted)
+                    entry_line_color = (0, 255, 255, 100)
+                    for x in range(line_start_x, int(SCREEN_W * 0.72), 20):
+                        pygame.draw.line(screen, entry_line_color, (x, entry_y), (min(x + 10, int(SCREEN_W * 0.72)), entry_y), 1)
+
+                    # 2. Flecha de Entrada y Ratio (Cian Neón Intenso con Glow)
+                    arrow_color = (0, 255, 255)
+                    arrow_size = 16
+                    if entry_vis >= 0 and entry_vis < len(visible_candles):
+                        # Glow para flecha viewers
+                        glow_color = (0, 255, 255, 60)
+                        glow_surf = pygame.Surface((arrow_size + 8, arrow_size + 8), pygame.SRCALPHA)
+                        
+                        if g_dir == "BUY":
+                            points_glow = [(arrow_size//2 + 4, 0), (0, arrow_size + 4), (arrow_size + 8, arrow_size + 4)]
+                            pygame.draw.polygon(glow_surf, glow_color, points_glow)
+                            screen.blit(glow_surf, (line_start_x - arrow_size//2 - 4, entry_y - 2))
+                            
+                            points = [(line_start_x, entry_y + 3), (line_start_x - arrow_size//2, entry_y + 18), (line_start_x + arrow_size//2, entry_y + 18)]
+                            pygame.draw.polygon(screen, arrow_color, points)
+                        else:
+                            points_glow = [(arrow_size//2 + 4, arrow_size + 4), (0, 0), (arrow_size + 8, 0)]
+                            pygame.draw.polygon(glow_surf, glow_color, points_glow)
+                            screen.blit(glow_surf, (line_start_x - arrow_size//2 - 4, entry_y - arrow_size - 3))
+                            
+                            points = [(line_start_x, entry_y - 3), (line_start_x - arrow_size//2, entry_y - 18), (line_start_x + arrow_size//2, entry_y - 18)]
+                            pygame.draw.polygon(screen, arrow_color, points)
+                        
+                        # Etiqueta Ratio para Viewers (Eliminada a petición del usuario)
+                        pass
+
+                    # 3. Línea de Stop Loss (Rojo Neón Intenso con Glow)
+                    sl_color = (255, 30, 30) # Rojo Neón Intenso
+                    sl_glow_color = (255, 30, 30, 50)
+                    sl_line_alpha = 180 if grp.get("resolved") else 255
+                    
+                    sl_glow_surf = pygame.Surface((box_end_x - box_start_x, 6), pygame.SRCALPHA)
+                    pygame.draw.line(sl_glow_surf, sl_glow_color, (0, 3), (box_end_x - box_start_x, 3), 4)
+                    screen.blit(sl_glow_surf, (box_start_x, grp_sl_y - 3))
+                    
                     for x in range(box_start_x, box_end_x, 12):
-                        pygame.draw.line(screen, (200, 200, 200, 100), (x, entry_y), (x + 4, entry_y), 1)
+                        pygame.draw.line(screen, sl_color, (x, grp_sl_y), (min(x + 8, box_end_x), grp_sl_y), 2)
+                        
+                    # 4. Niveles de Meta (Etiquetas Jerárquicas META 1, META 2, LÍMITE - VIEWERS)
+                    for idx, (lvl, lvl_y) in enumerate(zip(grp["levels"], tp_levels_y)):
+                        tp_line_alpha = 30 if grp.get("resolved") or lvl.get("resolved") else 60
+                        dotted = (200, 200, 200, tp_line_alpha)
+                        for x in range(box_start_x, box_end_x, 20):
+                            pygame.draw.line(screen, dotted, (x, lvl_y), (min(x + 4, box_end_x), lvl_y), 1)
+                        
+                        # Etiquetas de Meta para Viewers
+                        rr_val = int(lvl['rr'])
+                        if rr_val in [1, 2, 3, MAX_RR]:
+                            meta_text = "LÍMITE" if rr_val == MAX_RR else f"META {idx + 1}"
+                            meta_surf = font_trade.render(meta_text, True, (200, 200, 200))
+                            meta_surf.set_alpha(120)
+                            meta_rect = meta_surf.get_rect()
+                            
+                            # Posicionamiento simétrico
+                            if g_dir == "BUY":
+                                meta_rect.bottomright = (box_end_x - 5, lvl_y - 2)
+                            else:
+                                meta_rect.topright = (box_end_x - 5, lvl_y + 2)
+                            screen.blit(meta_surf, meta_rect)
+
+                    # Línea de entrada corta
+                    for x in range(box_start_x, box_end_x, 12):
+                        pygame.draw.line(screen, (200, 200, 200, 80), (x, entry_y), (x + 4, entry_y), 1)
                     # Destello (flash) local y limpio sobre la caja
                     if grp.get("flash"):
                         f = grp["flash"]
@@ -4263,7 +4471,6 @@ while app_running:
             if guide_animation_start == 0:
                 guide_animation_start = pygame.time.get_ticks()
             
-            curr_ticks = pygame.time.get_ticks()
             elapsed = curr_ticks - guide_animation_start
             anim_progress = min(1.0, elapsed / 1000.0) 
             
@@ -4612,10 +4819,13 @@ while app_running:
                 pygame.draw.line(screen, (255, 255, 255, 120), (guide_x - 10, entry_y), (guide_x + guide_w - 10, entry_y), 2)
 
             # --- ACTUALIZACIÓN DE ANALYTICS (FASE 2) ---
+            # Iniciar sesión automáticamente si TikTok se conecta y no hay una activa
+            # (Eliminado de aquí y movido a nivel global)
+            
             if current_session_id is not None and current_time - last_analytics_update > 10000: # Cada 10 segundos
                 last_analytics_update = current_time
                 try:
-                    viewers = tiktok_chat.client.viewer_count if tiktok_chat.client and tiktok_chat.connected else 0
+                    viewers = tiktok_chat.get_viewer_count() if tiktok_chat.connected else 0
                     # Si no hay conexión real, podemos usar un valor simulado si el usuario quiere,
                     # pero por ahora dejamos 0 o lo que devuelva el cliente.
                     likes = tiktok_chat.session_total_likes + simulated_likes
@@ -4627,11 +4837,12 @@ while app_running:
 
         pygame.display.flip()
 
-    # Parar música al salir del game loop (volver al menú)
+    # --- FINALIZACIÓN DE LA APP ---
+    # Finalizar sesión de Analytics solo al cerrar la aplicación definitivamente
     if current_session_id is not None:
         try:
             end_session(current_session_id)
-            print(f"[ANALYTICS] Sesión finalizada ID: {current_session_id}")
+            print(f"[ANALYTICS] Sesión finalizada definitivamente ID: {current_session_id}")
             current_session_id = None
         except Exception as e:
             print(f"[ANALYTICS] Error finalizando sesión: {e}")

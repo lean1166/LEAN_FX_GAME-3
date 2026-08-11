@@ -168,8 +168,10 @@ def create_player(username):
     """Crear un nuevo jugador con balance inicial"""
     conn = get_connection()
     c = conn.cursor()
+    # Usamos datetime.now() para asegurar hora local del sistema
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        c.execute("INSERT INTO players (username) VALUES (?)", (username,))
+        c.execute("INSERT INTO players (username, created_at, last_active) VALUES (?, ?, ?)", (username, now_str, now_str))
         conn.commit()
     except sqlite3.IntegrityError:
         pass  # Ya existe
@@ -180,15 +182,17 @@ def update_player_balance(username, new_balance, win=False, loss=False):
     """Actualizar balance y stats de un jugador"""
     conn = get_connection()
     c = conn.cursor()
+    # Usamos datetime.now() para asegurar hora local del sistema
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if win:
-        c.execute("UPDATE players SET balance = ?, wins = wins + 1, last_active = CURRENT_TIMESTAMP WHERE username = ?",
-                  (new_balance, username))
+        c.execute("UPDATE players SET balance = ?, wins = wins + 1, last_active = ? WHERE username = ?",
+                  (new_balance, now_str, username))
     elif loss:
-        c.execute("UPDATE players SET balance = ?, losses = losses + 1, last_active = CURRENT_TIMESTAMP WHERE username = ?",
-                  (new_balance, username))
+        c.execute("UPDATE players SET balance = ?, losses = losses + 1, last_active = ? WHERE username = ?",
+                  (new_balance, now_str, username))
     else:
-        c.execute("UPDATE players SET balance = ?, last_active = CURRENT_TIMESTAMP WHERE username = ?",
-                  (new_balance, username))
+        c.execute("UPDATE players SET balance = ?, last_active = ? WHERE username = ?",
+                  (new_balance, now_str, username))
     conn.commit()
     conn.close()
 
@@ -199,8 +203,10 @@ def add_trade_history(username, trade_type, result, pnl, rr_ratio=0):
     c = conn.cursor()
     player = get_player(username)
     if player:
-        c.execute("INSERT INTO trade_history (player_id, trade_type, result, pnl, rr_ratio) VALUES (?, ?, ?, ?, ?)",
-                  (player["id"], trade_type, result, pnl, rr_ratio))
+        # Usamos datetime.now() para asegurar hora local del sistema
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO trade_history (player_id, trade_type, result, pnl, rr_ratio, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                  (player["id"], trade_type, result, pnl, rr_ratio, now_str))
     conn.commit()
     conn.close()
 
@@ -259,8 +265,10 @@ def reset_all_players():
         try:
             conn = get_connection()
             c = conn.cursor()
+            # Usamos datetime.now() para asegurar hora local del sistema
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             c.execute("UPDATE players SET balance = 10000, wins = 0, losses = 0")
-            c.execute("INSERT INTO resets (reason) VALUES (?)", ("Reset mensual",))
+            c.execute("INSERT INTO resets (reason, reset_date) VALUES (?, ?)", ("Reset mensual", now_str))
             c.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", ("last_reset", datetime.now().strftime("%Y-%m")))
             conn.commit()
             conn.close()
@@ -347,10 +355,24 @@ def get_all_players_ranked():
 # --- FUNCIONES DE ANALYTICS (FASE 2) ---
 
 def start_session():
-    """Inicia una nueva sesión y devuelve su ID"""
+    """
+    Inicia una nueva sesión. Si ya hay una abierta (sin end_time), la devuelve.
+    Si no, crea una fresca con un ID incremental y la hora actual.
+    """
     conn = get_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO sessions (start_time) VALUES (CURRENT_TIMESTAMP)")
+    
+    # 1. Buscar si hay una sesión abierta (sin end_time) para evitar duplicados en la misma ejecución
+    c.execute("SELECT id FROM sessions WHERE end_time IS NULL ORDER BY id DESC LIMIT 1")
+    row = c.fetchone()
+    if row:
+        session_id = row['id']
+        conn.close()
+        return session_id
+        
+    # 2. Si no hay abierta, CREAR SIEMPRE UNA NUEVA (ID incremental automático)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO sessions (start_time) VALUES (?)", (now_str,))
     session_id = c.lastrowid
     conn.commit()
     conn.close()
@@ -361,7 +383,9 @@ def end_session(session_id):
     """Finaliza una sesión marcando el end_time"""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE sessions SET end_time = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+    # Usamos datetime.now() para asegurar hora local del sistema
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("UPDATE sessions SET end_time = ? WHERE id = ?", (now_str, session_id))
     conn.commit()
     conn.close()
 
@@ -426,7 +450,9 @@ def add_session_event(session_id, event_name):
     """Registra la activación de un evento en la sesión"""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO session_events (session_id, event_name) VALUES (?, ?)", (session_id, event_name))
+    # Usamos datetime.now() para asegurar hora local del sistema
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO session_events (session_id, event_name, timestamp) VALUES (?, ?, ?)", (session_id, event_name, now_str))
     conn.commit()
     conn.close()
 
@@ -452,19 +478,19 @@ def get_analytics_data(filter_type='hoy', custom_dates=None):
     params = []
 
     if filter_type == 'hoy':
-        where_clause = "date(start_time) = date('now')"
+        where_clause = "date(start_time) = date('now', 'localtime')"
     elif filter_type == 'ayer':
-        where_clause = "date(start_time) = date('now', '-1 day')"
+        where_clause = "date(start_time) = date('now', 'localtime', '-1 day')"
     elif filter_type == '3d':
-        where_clause = "date(start_time) >= date('now', '-3 days')"
+        where_clause = "date(start_time) >= date('now', 'localtime', '-3 days')"
     elif filter_type == '7d':
-        where_clause = "date(start_time) >= date('now', '-7 days')"
+        where_clause = "date(start_time) >= date('now', 'localtime', '-7 days')"
     elif filter_type == 'ayer_7d':
-        where_clause = "date(start_time) BETWEEN date('now', '-14 days') AND date('now', '-7 days')"
+        where_clause = "date(start_time) BETWEEN date('now', 'localtime', '-14 days') AND date('now', 'localtime', '-7 days')"
     elif filter_type == 'mes':
-        where_clause = "date(start_time) >= date('now', 'start of month')"
+        where_clause = "date(start_time) >= date('now', 'localtime', 'start of month')"
     elif filter_type == 'ayer_mes':
-        where_clause = "date(start_time) BETWEEN date('now', 'start of month', '-1 month') AND date('now', 'start of month', '-1 day')"
+        where_clause = "date(start_time) BETWEEN date('now', 'localtime', 'start of month', '-1 month') AND date('now', 'localtime', 'start of month', '-1 day')"
     elif filter_type == 'custom' and custom_dates:
         where_clause = "date(start_time) BETWEEN ? AND ?"
         params = [custom_dates[0], custom_dates[1]]
@@ -730,3 +756,74 @@ def get_comparison_data(filter1='hoy', custom1=None, filter2='ayer', custom2=Non
     })
     
     return comparison
+
+def merge_v2_data(v2_db_path):
+    """
+    Importa y suma los datos de la Versión 2 a la Versión 3 actual.
+    Si el jugador ya existe, suma el balance y las stats. Si no, lo crea.
+    """
+    if not os.path.exists(v2_db_path):
+        print(f"[DB] Archivo V2 no encontrado en: {v2_db_path}")
+        return False, "Archivo no encontrado"
+
+    try:
+        # Conexión a la DB de la V2
+        conn_v2 = sqlite3.connect(v2_db_path)
+        conn_v2.row_factory = sqlite3.Row
+        c_v2 = conn_v2.cursor()
+        
+        # Obtener todos los jugadores de la V2 (excluyendo streamer para evitar conflictos de balance base)
+        c_v2.execute("SELECT username, balance, wins, losses, created_at FROM players WHERE username != 'LEAN FX'")
+        v2_players = c_v2.fetchall()
+        
+        if not v2_players:
+            conn_v2.close()
+            return True, "No hay jugadores para importar"
+
+        # Conexión a la DB de la V3
+        conn_v3 = get_connection()
+        c_v3 = conn_v3.cursor()
+        
+        imported_count = 0
+        updated_count = 0
+        
+        for p in v2_players:
+            username = p['username']
+            v2_balance = p['balance']
+            v2_wins = p['wins']
+            v2_losses = p['losses']
+            v2_created = p['created_at']
+            
+            # Verificar si existe en V3
+            c_v3.execute("SELECT id, balance, wins, losses FROM players WHERE username = ?", (username,))
+            existing = c_v3.fetchone()
+            
+            if existing:
+                # Sumar a lo existente (Ranking Histórico Total)
+                new_balance = existing['balance'] + (v2_balance - 10000) # Solo sumamos la ganancia/perdida neta sobre el base
+                new_wins = existing['wins'] + v2_wins
+                new_losses = existing['losses'] + v2_losses
+                
+                c_v3.execute("""UPDATE players 
+                             SET balance = ?, wins = ?, losses = ?, last_active = CURRENT_TIMESTAMP 
+                             WHERE username = ?""", 
+                          (new_balance, new_wins, new_losses, username))
+                updated_count += 1
+            else:
+                # Crear nuevo con los datos de la V2
+                c_v3.execute("""INSERT INTO players (username, balance, wins, losses, created_at, last_active) 
+                             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                          (username, v2_balance, v2_wins, v2_losses, v2_created))
+                imported_count += 1
+        
+        conn_v3.commit()
+        conn_v3.close()
+        conn_v2.close()
+        
+        msg = f"Migración completada: {imported_count} nuevos, {updated_count} actualizados."
+        print(f"[DB] {msg}")
+        return True, msg
+        
+    except Exception as e:
+        print(f"[DB] Error en la migración: {e}")
+        return False, str(e)

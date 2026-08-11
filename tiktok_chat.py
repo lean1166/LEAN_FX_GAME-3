@@ -318,3 +318,7 @@ class TikTokChatReader:
     def get_like_count(self):
         """Obtener el conteo de likes acumulado desde el último reset"""
         return self.like_count
+    
+    def get_viewer_count(self):
+        """Obtener el conteo de espectadores actual"""
+        return self.viewer_count

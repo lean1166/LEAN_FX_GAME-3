@@ -1,0 +1,23 @@
+--- RESUMEN GENERAL ---
+id,3
+start_time,2026-08-10 21:09:53
+end_time,2026-08-10 21:21:18
+peak_viewers,0
+avg_viewers_sum,0
+avg_viewers_count,65
+total_likes,360
+total_messages,0
+total_rounds,13
+unique_participants_count,0
+fxp_distributed,0.0
+duration_secs,685
+
+--- RR STATS ---
+Ratio,Wins,Losses,WinRate%
+1:1.0,4,22,15.38%
+1:2.0,4,0,100.00%
+1:3.0,3,0,100.00%
+
+--- EVENTOS ---
+Evento,Timestamp
+LIQUIDITY_A,2026-08-10 21:19:57
