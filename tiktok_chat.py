@@ -29,7 +29,7 @@ def download_avatar(username, url):
 # Intentar importar TikTokLive
 try:
     from TikTokLive import TikTokLiveClient
-    from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, LikeEvent
+    from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent, LikeEvent, RoomUserSeqEvent
     TIKTOK_AVAILABLE = True
 except ImportError:
     TIKTOK_AVAILABLE = False
@@ -134,6 +134,8 @@ class TikTokChatReader:
         self.username = username
         self.max_rr = max_rr  # Límite máximo de R:R permitido (1:max_rr)
         self.connected = False
+        # --- Contador de espectadores (Analytics) ---
+        self.viewer_count = 0
         self.votes = []  # Lista de {"name": str, "vote": "BUY"/"SELL", "rr": float, "avatar_url": str}
         self.voting_open = False  # True cuando se puede votar (zona activa)
         self.voters_this_zone = set()  # Viewers que ya votaron en esta ronda/zona (cooldown por ronda)
@@ -184,6 +186,30 @@ class TikTokChatReader:
                 async def on_disconnect(event: DisconnectEvent):
                     self.connected = False
                     print(f"[TIKTOK] Desconectado del live")
+
+                @self.client.on(RoomUserSeqEvent)
+                async def on_room_user_seq(event: RoomUserSeqEvent):
+                    try:
+                        # TikTokLive 6.6.6 expone el contador como viewer_count.
+                        # Dejamos fallbacks por compatibilidad entre builds.
+                        value = None
+                        for attr in ("viewer_count", "viewerCount", "total_viewers", "totalViewers"):
+                            candidate = getattr(event, attr, None)
+                            if isinstance(candidate, (int, float)) and candidate >= 0:
+                                value = int(candidate)
+                                break
+
+                        if value is not None:
+                            self.viewer_count = value
+
+                            # Loguear solo la primera lectura para confirmar que
+                            # Analytics está recibiendo el dato real.
+                            if not getattr(on_room_user_seq, "_logged", False):
+                                print(f"[ANALYTICS] Viewer count recibido: {self.viewer_count}")
+                                on_room_user_seq._logged = True
+
+                    except Exception as viewer_err:
+                        print(f"[ANALYTICS] Error procesando viewer count: {viewer_err}")
 
                 @self.client.on(LikeEvent)
                 async def on_like(event: LikeEvent):
@@ -320,5 +346,5 @@ class TikTokChatReader:
         return self.like_count
     
     def get_viewer_count(self):
-        """Obtener el conteo de espectadores actual"""
+        """Obtener el conteo de espectadores actual para Analytics."""
         return self.viewer_count

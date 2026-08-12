@@ -353,6 +353,7 @@ wins = streamer_data["wins"]
 losses = streamer_data["losses"]
 STREAMER_NAME = "LEAN FX"
 candles = []
+active_trade = None
 price = 1000
 # --- SISTEMA DE IMPULSO Y RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
 trend_dir = random.choice([-1, 1])
@@ -413,10 +414,56 @@ for _ in range(180):
     
     candles.append({"open": open_p, "close": close_p, "high": high_p, "low": low_p})
     price = close_p
-current_candle = {"open": candles[-1]["close"], "close": candles[-1]["close"], "high": candles[-1]["close"], "low": candles[-1]["close"]}
+current_candle = candles[-1]
 buttons_active = False
-zone_time_left = 0.0
-active_trade = None
+if 'active_trade' in globals() and active_trade and "groups" in active_trade:
+        c_high = current_candle["high"]
+        c_low = current_candle["low"]
+
+        any_active_left = False
+        for g_dir, grp in active_trade["groups"].items():
+            if grp.get("resolved"):
+                continue
+                
+            sl_val = grp["sl"]
+            
+            if g_dir == "BUY":
+                if c_low <= sl_val:
+                    grp["resolved"] = True
+                else:
+                    all_tp_met = True
+                    for lvl in grp["levels"]:
+                        if not lvl["resolved"]:
+                            if c_high >= lvl["tp"]:
+                                lvl["resolved"] = True
+                            else:
+                                all_tp_met = False
+                    if all_tp_met:
+                        grp["resolved"] = True
+                            
+            elif g_dir == "SELL":
+                if c_high >= sl_val:
+                    grp["resolved"] = True
+                else:
+                    all_tp_met = True
+                    for lvl in grp["levels"]:
+                        if not lvl["resolved"]:
+                            if c_low <= lvl["tp"]:
+                                lvl["resolved"] = True
+                            else:
+                                all_tp_met = False
+                    if all_tp_met:
+                        grp["resolved"] = True
+
+            if not grp.get("resolved"):
+                any_active_left = True
+
+        if not any_active_left:
+            active_trade = None
+            if 'trade_decided' in globals():
+                trade_decided = False
+                
+  
 # --- SISTEMA DE AGOTAMIENTO DE MERCADO ---
 market_exhaustion_active = False
 market_exhaustion_dir = 0
@@ -3153,6 +3200,11 @@ while app_running:
                                 gain = int(TRADE_RISK * lvl["rr"])
                                 update_player_balance(uname, pl["balance"] + gain, win=True)
                                 add_trade_history(uname, g_dir, "WIN", gain, lvl["rr"])
+
+                                # Fase 2: Analytics FXP
+                                if current_session_id is not None:
+                                    add_session_fxp(current_session_id, gain)
+
                                 # Fase 2: Analytics RR
                                 if current_session_id is not None:
                                     add_session_rr_result(current_session_id, lvl["rr"], win=True)
@@ -4663,11 +4715,11 @@ while app_running:
                     # R:R alineado a la DERECHA EXTREMA
                     rr_txt = font_target.render(target, True, (200, 220, 240))
                     rr_y = card_rect.centery - rr_txt.get_height() // 2
-                    screen.blit(rr_txt, (card_rect.right - rr_txt.get_width() - 8, rr_y))
+                    screen.blit(rr_txt, (card_rect.right - rr_txt.get_width() - 40, rr_y))
 
                     # Código de telemetría diminuto (falso)
                     tel_txt = font_deco.render(f"TK-{i}0{i}", True, (*color, 80))
-                    screen.blit(tel_txt, (card_rect.right - 30, card_rect.y + 4))
+                    screen.blit(tel_txt, (card_rect.right - tel_txt.get_width() - 5, card_rect.y + 4))
 
                     item_y += card_spacing
                 
