@@ -416,53 +416,7 @@ for _ in range(180):
     price = close_p
 current_candle = candles[-1]
 buttons_active = False
-if 'active_trade' in globals() and active_trade and "groups" in active_trade:
-        c_high = current_candle["high"]
-        c_low = current_candle["low"]
-
-        any_active_left = False
-        for g_dir, grp in active_trade["groups"].items():
-            if grp.get("resolved"):
-                continue
-                
-            sl_val = grp["sl"]
-            
-            if g_dir == "BUY":
-                if c_low <= sl_val:
-                    grp["resolved"] = True
-                else:
-                    all_tp_met = True
-                    for lvl in grp["levels"]:
-                        if not lvl["resolved"]:
-                            if c_high >= lvl["tp"]:
-                                lvl["resolved"] = True
-                            else:
-                                all_tp_met = False
-                    if all_tp_met:
-                        grp["resolved"] = True
-                            
-            elif g_dir == "SELL":
-                if c_high >= sl_val:
-                    grp["resolved"] = True
-                else:
-                    all_tp_met = True
-                    for lvl in grp["levels"]:
-                        if not lvl["resolved"]:
-                            if c_low <= lvl["tp"]:
-                                lvl["resolved"] = True
-                            else:
-                                all_tp_met = False
-                    if all_tp_met:
-                        grp["resolved"] = True
-
-            if not grp.get("resolved"):
-                any_active_left = True
-
-        if not any_active_left:
-            active_trade = None
-            if 'trade_decided' in globals():
-                trade_decided = False
-                
+# --- SL/TP: se resuelve dentro del GAME LOOP usando OHLC real ---
   
 # --- SISTEMA DE AGOTAMIENTO DE MERCADO ---
 market_exhaustion_active = False
@@ -2898,6 +2852,8 @@ while app_running:
                         idle_voices.append(sv)
                 if idle_voices:
                     audio_manager.play(f"IDLE_VOZ_{random.randint(1, 14)}.mp3")
+
+                    
         # --- MOVER PRECIO (solo si NO está pausado, NO está congelado, NO hay voice freeze, NO hay evento de liquidez y NO hay audio sonando) ---
         if audio_manager.juego_pausado:
             # Liberar la pausa forzada si el audio terminó y pasó el tiempo de gracia
@@ -2943,98 +2899,103 @@ while app_running:
                 current_candle["low"] = min(current_candle["low"], current_candle["close"])
                 last_tick_time = current_time
                 # --- EVALUAR TRADE ACTIVO (DUAL INDEPENDIENTE) ---
+                # Usa HIGH/LOW reales de la vela: SL/TP no dependen del cierre.
                 if active_trade is not None and "groups" in active_trade:
-                    current_price = current_candle["close"]
+                    c_high = current_candle.get("high")
+                    c_low = current_candle.get("low")
                     current_time = pygame.time.get_ticks()
-                    
-                    for g_dir, grp in active_trade["groups"].items():
-                        if grp.get("resolved") or active_trade.get("cerrada"): continue
-                        
-                        # 1. Evaluar Riesgo (Stop Loss)
-                        sl_hit = False
-                        if g_dir == "BUY" and current_price <= grp["sl"]:
-                            sl_hit = True
-                        elif g_dir == "SELL" and current_price >= grp["sl"]:
-                            sl_hit = True
-                            
-                        if sl_hit:
-                            # BORRADO QUIRÚRGICO: Solo marcamos este bando como resuelto
-                            grp["resolved"] = True
-                            grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BEAR}
-                            SL_HIT_AUDIO_FLAG = True
-                            audio_manager.set_force_pause(True)
-                            audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_sl.mp3", pausar_mercado=True)
-                            voice_freeze_start = current_time
-                            trade_loss(TRADE_RISK, 1.0)
-                            trade_history.append({"type": g_dir, "result": "LOSS", "pnl": -TRADE_RISK})
-                            
-                            # Flash de pantalla si es el bando principal
-                            if g_dir == bot_decision:
-                                flash_active = True
-                                flash_start_time = current_time
-                                flash_color = GLOBAL_COLOR_BEAR
-                                flash_text = "-100 FXP"
-                                total_operations += 1
-                                if voz_loss_voices and viewer_trade_active is None:
-                                    audio_manager.play(f"VOZ_LOSS_{random.randint(1, 7)}.mp3")
-                            
-                            # Inmunidad del resto: NO matamos el active_trade aquí, 
-                            # dejamos que el bando opuesto siga corriendo si no está resuelto.
-                            # active_trade = None  <-- ELIMINADO PARA EVITAR BORRADO CRUZADO
-                            continue # Pasar al siguiente grupo en lugar de romper el bucle
 
-                        # 2. Evaluar niveles de TP (1 al MAX_RR)
-                        for lvl in grp["levels"]:
-                            if lvl.get("resolved"): continue
-                            
-                            tp_hit = False
-                            if g_dir == "BUY" and current_price >= lvl["tp"]:
-                                tp_hit = True
-                            elif g_dir == "SELL" and current_price <= lvl["tp"]:
-                                tp_hit = True
-                                
-                            if tp_hit:
+                    if c_high is not None and c_low is not None:
+                        to_remove = []
+
+                        for g_dir, grp in list(active_trade["groups"].items()):
+                            if grp.get("resolved") or active_trade.get("cerrada"):
+                                continue
+
+                            # 1. SL tiene prioridad absoluta dentro del grupo.
+                            sl_hit = (g_dir == "BUY" and c_low <= grp["sl"]) or (g_dir == "SELL" and c_high >= grp["sl"])
+
+                            if sl_hit:
+                                grp["resolved"] = True
+                                grp["_closed_by"] = "SL"
+                                for lvl in grp.get("levels", []):
+                                    lvl["resolved"] = True
+                                    lvl["_skipped_by_sl"] = True
+
+                                grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BEAR}
+                                SL_HIT_AUDIO_FLAG = True
+                                audio_manager.set_force_pause(True)
+                                audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_sl.mp3", pausar_mercado=True)
+                                voice_freeze_start = current_time
+                                trade_loss(TRADE_RISK, 1.0)
+                                trade_history.append({"type": g_dir, "result": "LOSS", "pnl": -TRADE_RISK})
+
+                                if g_dir == bot_decision:
+                                    flash_active = True
+                                    flash_start_time = current_time
+                                    flash_color = GLOBAL_COLOR_BEAR
+                                    flash_text = "-100 FXP"
+                                    total_operations += 1
+                                    if voz_loss_voices and viewer_trade_active is None:
+                                        audio_manager.play(f"VOZ_LOSS_{random.randint(1, 7)}.mp3")
+                                continue
+
+                            # 2. TP: HIGH para BUY, LOW para SELL.
+                            for lvl in grp.get("levels", []):
+                                if lvl.get("resolved") or lvl.get("_skipped_by_sl"):
+                                    continue
+
+                                tp_hit = (g_dir == "BUY" and c_high >= lvl["tp"]) or (g_dir == "SELL" and c_low <= lvl["tp"])
+                                if not tp_hit:
+                                    continue
+
                                 lvl["resolved"] = True
+                                rr = lvl["rr"]
                                 grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
-                                trade_win(TRADE_RISK * lvl["rr"], lvl["rr"])
-                                trade_history.append({"type": g_dir, "result": "WIN", "pnl": TRADE_RISK * lvl["rr"]})
-                                
-                                # Obtener el RR máximo configurado para este grupo
-                                max_configured_rr = grp.get("max_rr", MAX_RR)
+                                gain = TRADE_RISK * rr
+                                trade_win(gain, rr)
+                                trade_history.append({"type": g_dir, "result": "WIN", "pnl": gain})
 
-                                # SI TOCA LA META MÁXIMA: Cierre forzoso inmediato
-                                if lvl["rr"] >= max_configured_rr:
+                                max_configured_rr = grp.get("max_rr", MAX_RR)
+                                if rr >= max_configured_rr:
+                                    grp["resolved"] = True
+                                    grp["_closed_by"] = "TP"
                                     close_position(active_trade, g_dir, grp, lvl, is_viewer=False)
                                     voice_freeze_start = current_time
-                                    continue # Salir del bucle de niveles para este grupo
-                                else:
-                                    # Audio de TP normal (tp1, tp2...)
-                                    audio_manager.set_force_pause(True)
-                                    audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_tp{int(lvl['rr'])}.mp3", pausar_mercado=True)
-                                    voice_freeze_start = current_time
-                                    # Puntos flotantes en el gráfico
+                                    break
+
+                                audio_manager.set_force_pause(True)
+                                audio_manager.play(f"{g_dir.lower().replace('sell', 'sel')}_tp{int(rr)}.mp3", pausar_mercado=True)
+                                voice_freeze_start = current_time
+                                if g_dir == bot_decision:
                                     flash_active = True
                                     flash_start_time = current_time
                                     flash_color = GLOBAL_COLOR_BULL
-                                    flash_text = f"+{int(lvl['rr']) * 100} FXP"
+                                    flash_text = f"+{int(rr) * 100} FXP"
+                                    total_operations += 1
 
-                    # Limpieza Quirúrgica (Bot): Eliminar bando si terminó su flash
-                    if active_trade is not None and "groups" in active_trade:
-                        to_remove = []
-                        for g_dir, grp in active_trade["groups"].items():
-                            if grp.get("resolved"):
-                                if grp.get("flash"):
-                                    if current_time - grp["flash"]["start"] > 1500:
-                                        to_remove.append(g_dir)
-                                else:
-                                    to_remove.append(g_dir)
-                        
+                            # Un grupo solo termina cuando todos sus niveles fueron resueltos.
+                            if not grp.get("resolved") and grp.get("levels"):
+                                if all(lvl.get("resolved") or lvl.get("_skipped_by_sl") for lvl in grp["levels"]):
+                                    grp["resolved"] = True
+                                    grp["_closed_by"] = "TP"
+
+                        # 3. Limpieza independiente de BUY/SELL después del flash.
+                        for g_dir, grp in list(active_trade["groups"].items()):
+                            if not grp.get("resolved"):
+                                continue
+                            flash = grp.get("flash")
+                            if flash is None or current_time - flash.get("start", current_time) > 1500:
+                                to_remove.append(g_dir)
+
                         for g_dir in to_remove:
-                            del active_trade["groups"][g_dir]
-                        
-                        if not active_trade["groups"]:
+                            active_trade["groups"].pop(g_dir, None)
+
+                        if active_trade is not None and not active_trade["groups"]:
                             active_trade = None
                             viewer_votes_display = []
+                            trade_decided = False
+
                 # --- DETECTAR SI PRECIO LLEGA A UNA ZONA (solo 1 vez por zona) ---
                 if active_trade is None and not zone_frozen and viewer_trade_active is None and not audio_manager.is_playing() and liquidity_event_active is None:
                     price_now = current_candle["close"]
