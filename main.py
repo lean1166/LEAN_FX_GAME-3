@@ -18,6 +18,7 @@ from database import (get_streamer_stats, update_player_balance, add_trade_histo
                       add_session_event, add_session_fxp)
 from ranking_utils import load_top_viewers
 from tiktok_chat import TikTokChatReader
+from trading_round import OPEN, RESOLVED, add_viewer_level, create_round, resolve_round
 # Inicializar el lector de TikTok globalmente para que arranque al iniciar main.py
 tiktok_reader = TikTokChatReader(username="lean.fx1")
 tiktok_reader.start()
@@ -250,6 +251,83 @@ def trade_loss(amount, rr_ratio=1.0):
     add_trade_history("LEAN FX", "SELL", "LOSS", -amount, rr_ratio)
     add_ticker_event(f"STREAMER LOSS: -{int(amount)} FXP")
 
+def sync_legacy_trade_views():
+    """Expose rendering-only compatibility views of the canonical round."""
+    global active_trade, viewer_trade_active
+    active_trade = active_round if active_round and active_round.get("has_bot") else None
+    viewer_trade_active = active_round if active_round and active_round.get("has_viewers") else None
+
+def apply_round_events(events, current_time):
+    """Adapter: domain events drive DB, audio and UI; they never alter round state."""
+    global flash_active, flash_start_time, flash_color, flash_text, total_operations
+    global voice_freeze_start
+    for event in events:
+        side = event.get("side")
+        side_data = event.get("side_data", {})
+        if event["type"] in ("SIDE_SL", "SIDE_CLOSED") and event.get("reason") == "OPPOSITE_TP1":
+            # The losing side is economically a loss, even though its explicit
+            # domain reason records why it was closed.
+            side_data["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BEAR}
+            if any(level.get("streamer") for level in side_data.get("levels", [])):
+                trade_loss(TRADE_RISK, 1.0)
+                trade_history.append({"type": side, "result": "LOSS", "pnl": -TRADE_RISK})
+            for level in side_data.get("levels", []):
+                for uname in level.get("users", []):
+                    pl = get_player(uname)
+                    if pl:
+                        update_player_balance(uname, max(8000, pl["balance"] - TRADE_RISK), loss=True)
+                        add_trade_history(uname, side, "LOSS", -TRADE_RISK, 1.0)
+                    viewer_streaks[uname] = 0
+                    if current_session_id is not None:
+                        add_session_rr_result(current_session_id, 1.0, win=False)
+        elif event["type"] == "SIDE_SL":
+            side_data["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BEAR}
+            if side_data.get("levels") and any(level.get("streamer") for level in side_data["levels"]):
+                trade_loss(TRADE_RISK, 1.0)
+                trade_history.append({"type": side, "result": "LOSS", "pnl": -TRADE_RISK})
+            for level in side_data.get("levels", []):
+                for uname in level.get("users", []):
+                    pl = get_player(uname)
+                    if pl:
+                        update_player_balance(uname, max(8000, pl["balance"] - TRADE_RISK), loss=True)
+                        add_trade_history(uname, side, "LOSS", -TRADE_RISK, 1.0)
+                    viewer_streaks[uname] = 0
+                    if current_session_id is not None:
+                        add_session_rr_result(current_session_id, 1.0, win=False)
+            audio_manager.set_force_pause(True)
+            audio_manager.play(f"{side.lower().replace('sell', 'sel')}_sl.mp3", pausar_mercado=True)
+            voice_freeze_start = current_time
+        elif event["type"] == "ROUND_TP1":
+            side_data["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
+            # All configured payout levels settle from one physical TP1 winner.
+            for level in event.get("levels", []):
+                rr = level["rr"]
+                if level.get("streamer"):
+                    gain = TRADE_RISK * rr
+                    trade_win(gain, rr)
+                    trade_history.append({"type": side, "result": "WIN", "pnl": gain})
+                for uname in level.get("users", []):
+                    pl = get_player(uname)
+                    if pl:
+                        gain = int(TRADE_RISK * rr)
+                        update_player_balance(uname, pl["balance"] + gain, win=True)
+                        add_trade_history(uname, side, "WIN", gain, rr)
+                        add_ticker_event(f"{uname} WIN: +{gain} FXP (RR {rr})")
+                        if current_session_id is not None:
+                            add_session_fxp(current_session_id, gain)
+                            add_session_rr_result(current_session_id, rr, win=True)
+                    viewer_streaks[uname] = viewer_streaks.get(uname, 0) + 1
+            flash_active = True
+            flash_start_time = current_time
+            flash_color = GLOBAL_COLOR_BULL
+            flash_text = "+TP1"
+            total_operations += 1
+            audio_manager.set_force_pause(True)
+            audio_manager.play(f"{side.lower().replace('sell', 'sel')}_tp1.mp3", pausar_mercado=True)
+            voice_freeze_start = current_time
+            if active_round and active_round.get("has_viewers"):
+                luvvoice_tts.play_on_max_tp()
+
 def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
     """Cierra una posición de forma forzosa al tocar la Meta Máxima."""
     global market_exhaustion_active, market_exhaustion_start, market_exhaustion_dir
@@ -261,7 +339,7 @@ def close_position(trade_data, g_dir, grp, lvl, is_viewer=False):
     # 1. Bloqueo de Seguridad: Marcar como resuelto e impedir más cálculos
     lvl["resolved"] = True
     grp["resolved"] = True
-    trade_data["cerrada"] = True
+    # Deprecated compatibility hook: canonical rounds use status/resolution_reason.
     
     # 2. Feedback Visual y Audio
     grp["flash"] = {"start": current_time, "color": GLOBAL_COLOR_BULL}
@@ -353,6 +431,11 @@ wins = streamer_data["wins"]
 losses = streamer_data["losses"]
 STREAMER_NAME = "LEAN FX"
 candles = []
+# Canonical trading state.  The two legacy names below are derived UI views only;
+# neither is allowed to resolve or own a trade.
+active_round = None
+next_round_id = 1
+round_cleanup_start = 0
 active_trade = None
 price = 1000
 # --- SISTEMA DE IMPULSO Y RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
@@ -524,7 +607,7 @@ tiktok_chat.start()  # Inicia en hilo separado
 # --- SISTEMA DE VOTOS DE VIEWERS ---
 viewer_votes = []  # Lista de {"name": str, "vote": "BUY"/"SELL"} votos pendientes
 viewer_votes_display = []  # Copia para mostrar incluso después de resolver
-viewer_trade_active = None  # Trade activo de viewers: {"type", "entry", "sl", "tp", "entry_index"}
+viewer_trade_active = None  # Derived compatibility view of active_round for rendering only.
 
 # --- FASE 2: ANALYTICS ---
 current_session_id = None
@@ -2575,7 +2658,7 @@ while app_running:
             if timer_elapsed >= TIMER_DURATION:
                 # Timer terminó, reanudar gráfico
                 # Si nadie eligió, el bot decide automáticamente
-                if not trade_decided and BOT_ENABLED and active_trade is None:
+                if not trade_decided and BOT_ENABLED and active_round is None:
                     can_trade = True
                     # Verificar cooldown
                     if current_time - bot_last_trade_time < BOT_COOLDOWN and bot_last_trade_time > 0:
@@ -2592,44 +2675,9 @@ while app_running:
                         # Cada bando se crea como un objeto independiente dentro de 'groups'
                         base_sl_dist = max(0.01, (zone_detected["high"] - zone_detected["low"]) + SL_BUFFER)
                         
-                        active_trade = {
-                            "entry": entry_price,
-                            "entry_index": len(candles),
-                            "groups": {
-                                "BUY": {
-                                    "entry": entry_price,
-                                    "entry_index": len(candles),
-                                    "dir": "BUY",
-                                    "tipo": "BUY",
-                                    "sl": entry_price - base_sl_dist,
-                                    "rr": 1.0, # Base RR
-                                    "levels": [
-                                        {"rr": float(rr), "tp": entry_price + base_sl_dist * rr, "resolved": False, "users": []}
-                                        for rr in range(1, MAX_RR + 1)
-                                    ],
-                                    "resolved": False,
-                                    "flash": None,
-                                    "max_rr": float(MAX_RR),
-                                    "be_armed": False
-                                },
-                                "SELL": {
-                                    "entry": entry_price,
-                                    "entry_index": len(candles),
-                                    "dir": "SELL",
-                                    "tipo": "SELL",
-                                    "sl": entry_price + base_sl_dist,
-                                    "rr": 1.0, # Base RR
-                                    "levels": [
-                                        {"rr": float(rr), "tp": entry_price - base_sl_dist * rr, "resolved": False, "users": []}
-                                        for rr in range(1, MAX_RR + 1)
-                                    ],
-                                    "resolved": False,
-                                    "flash": None,
-                                    "max_rr": float(MAX_RR),
-                                    "be_armed": False
-                                }
-                            }
-                        }
+                        active_round = create_round(next_round_id, entry_price, base_sl_dist, len(candles), bot_rr=MAX_RR)
+                        next_round_id += 1
+                        sync_legacy_trade_views()
                         
                         # Bot decision para el sesgo y audios
                         if zone_detected["type"] == "ALCISTA":
@@ -2659,66 +2707,18 @@ while app_running:
                     for v in viewer_votes:
                         v["rr"] = min(float(v.get("rr", 1.0)), float(MAX_RR))
 
-                    if viewer_trade_active is None:
-                        if active_trade is not None:
-                            viewer_trade_active = active_trade
-                        else:
-                            viewer_trade_active = {
-                                "groups": {},
-                                "sl_dist": base_sl_distance,
-                                "entry": entry_price,
-                                "entry_index": len(candles)
-                            }
-                            audio_manager.play("apertura.mp3", pausar_mercado=True)
+                    if active_round is None:
+                        active_round = create_round(next_round_id, entry_price, base_sl_distance, len(candles))
+                        next_round_id += 1
+                        audio_manager.play("apertura.mp3", pausar_mercado=True)
                     
                     # 2. Evitar Duplicidad de Cajas (Consolidar en una sola por Bando)
-                    groups = viewer_trade_active["groups"]
-                    v_sl_dist = viewer_trade_active.get("sl_dist", base_sl_distance)
+                    groups = active_round["sides"]
                     
                     for v in viewer_votes:
                         g_dir = v["vote"]
                         rr = round(float(v["rr"]), 1)
-                        # group_id es ahora solo el bando (BUY o SELL) para asegurar UNICIDAD DE CAJA
-                        group_id = g_dir
-                        
-                        if group_id not in groups:
-                            # Cada posición de viewer es independiente con su propia entrada
-                            tp_price = entry_price + (v_sl_dist * rr) if g_dir == "BUY" else entry_price - (v_sl_dist * rr)
-                            sl_price = entry_price - v_sl_dist if g_dir == "BUY" else entry_price + v_sl_dist
-                            
-                            groups[group_id] = {
-                                "dir": g_dir,
-                                "tipo": g_dir,
-                                "entry": entry_price,
-                                "entry_index": len(candles),
-                                "sl": sl_price,
-                                "rr": rr,
-                                "levels": [
-                                    {"rr": rr, "tp": tp_price, "users": [v["name"]], "resolved": False}
-                                ],
-                                "resolved": False,
-                                "flash": None,
-                                "max_rr": rr,
-                                "be_armed": False,
-                            }
-                        else:
-                            # Si el bando ya existe, añadimos este RR como un nuevo nivel de TP si no existe
-                            # O sumamos el usuario al nivel de RR correspondiente
-                            found_lvl = False
-                            for lvl in groups[group_id]["levels"]:
-                                if abs(lvl["rr"] - rr) < 0.05:
-                                    if v["name"] not in lvl["users"]:
-                                        lvl["users"].append(v["name"])
-                                    found_lvl = True
-                                    break
-                            
-                            if not found_lvl:
-                                tp_price = entry_price + (v_sl_dist * rr) if g_dir == "BUY" else entry_price - (v_sl_dist * rr)
-                                groups[group_id]["levels"].append({
-                                    "rr": rr, "tp": tp_price, "users": [v["name"]], "resolved": False
-                                })
-                                # Actualizar max_rr para que la caja se dibuje hasta el nivel más lejano
-                                groups[group_id]["max_rr"] = max(groups[group_id]["max_rr"], rr)
+                        add_viewer_level(active_round, g_dir, rr, v["name"])
                     
                     # Si no hay votos después de procesar, cajas por defecto (una por bando)
                     if not groups:
@@ -2744,9 +2744,11 @@ while app_running:
                     # Actualizar el contador superior con todos los votantes acumulados
                     all_voters = []
                     for g in groups.values():
-                        for uname in g["levels"][0]["users"]:
-                            all_voters.append({"name": uname, "vote": g["dir"]})
+                        for level in g["levels"]:
+                            for uname in level.get("users", []):
+                                all_voters.append({"name": uname, "vote": g["dir"]})
                     viewer_votes_display = all_voters
+                    sync_legacy_trade_views()
                     
                     # LIMPIAR VOTOS PROCESADOS para evitar duplicidad en el siguiente ciclo
                     viewer_votes = []
@@ -2900,7 +2902,16 @@ while app_running:
                 last_tick_time = current_time
                 # --- EVALUAR TRADE ACTIVO (DUAL INDEPENDIENTE) ---
                 # Usa HIGH/LOW reales de la vela: SL/TP no dependen del cierre.
-                if active_trade is not None and "groups" in active_trade:
+                if active_round is not None and active_round.get("status") == OPEN:
+                    round_events = resolve_round(active_round, current_candle)
+                    if round_events:
+                        apply_round_events(round_events, current_time)
+                        if active_round.get("status") == RESOLVED:
+                            round_cleanup_start = current_time
+                            sync_legacy_trade_views()
+
+                # Retired legacy resolver. Canonical resolve_round above is the only authority.
+                if False and active_trade is not None and "groups" in active_trade:
                     c_high = current_candle.get("high")
                     c_low = current_candle.get("low")
                     current_time = pygame.time.get_ticks()
@@ -3094,7 +3105,8 @@ while app_running:
             pygame._viewers_voted_this_zone = False
             tiktok_chat.close_voting()
         # --- RESOLVER TRADE DE VIEWERS (por grupo BUY/SELL y nivel R:R) ---
-        if viewer_trade_active is not None and not zone_frozen and viewer_trade_active.get("groups"):
+        # Retired viewer resolver: viewer payouts now consume resolve_round events.
+        if False and viewer_trade_active is not None and not zone_frozen and viewer_trade_active.get("groups"):
             vt_price = current_candle["close"]
             entry_price = viewer_trade_active["entry"]
             # Almacenar el evento de voz final (solo un TTS por resolución)
@@ -3229,6 +3241,18 @@ while app_running:
                         add_session_round(current_session_id)
                     if active_trade is None:
                         viewer_votes_display = []
+        # UI keeps the resolved round visible briefly; no state is mutated during cleanup.
+        if active_round is not None and active_round.get("status") == RESOLVED and current_time - round_cleanup_start > 1500:
+            if active_round.get("has_viewers"):
+                check_top5_levelup_sound(current_time)
+                if current_session_id is not None:
+                    add_session_round(current_session_id)
+            active_round = None
+            viewer_votes = []
+            viewer_votes_display = []
+            trade_decided = False
+            sync_legacy_trade_views()
+
         if not audio_manager.juego_pausado and not zone_frozen and liquidity_event_active is None and current_time - last_candle_time >= CANDLE_DURATION:
             # --- ACTUALIZAR ESTRUCTURA DE IMPULSO/RETROCESO (Dinámico: 4-6 Impulsos, 2-3 Retrocesos) ---
             trend_count += 1
@@ -3308,10 +3332,10 @@ while app_running:
                     active_fvg["index"] -= 1
                     if active_fvg["index"] < 0:
                         active_fvg = None
-                if active_trade is not None and "entry_index" in active_trade:
-                    active_trade["entry_index"] -= 1
-                if viewer_trade_active is not None and "entry_index" in viewer_trade_active:
-                    viewer_trade_active["entry_index"] -= 1
+                if active_round is not None and "entry_index" in active_round:
+                    active_round["entry_index"] -= 1
+                    for side_data in active_round["sides"].values():
+                        side_data["entry_index"] -= 1
             current_len = len(candles)
             bos_markers[:] = [b for b in bos_markers if current_len - b["break_index"] <= 999]
             confirmed_fractals[:] = [f for f in confirmed_fractals if current_len - f["index"] <= 999]
